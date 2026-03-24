@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shalom Church</title>
+  <style>
+    body { margin:0; font-family: Arial, sans-serif; background:#f5f5f5; }
+    header { 
+      background: url('church.jpg') center center / cover no-repeat; 
+      color:white; 
+      height: 80vh;
+      display:flex;
+      flex-direction:column;
+      justify-content:center;
+      align-items:center;
+      text-align:center; 
+      position:relative;
+    }
+    header::before {
+      content:"";
+      position:absolute;
+      top:0; left:0; right:0; bottom:0;
+      background: rgba(0,0,0,0.5);
+    }
+    header h1, header p {
+      position:relative;
+      z-index:1;
+    }
+    nav { background:#34495e; padding:10px; text-align:center; }
+    nav a { color:white; margin:0 15px; text-decoration:none; font-weight:bold; }
+    section { padding:40px 20px; text-align:center; }
+    .about-bg {
+      background: url('background.jpg') center center / cover no-repeat;
+      color: white;
+      position: relative;
+      min-height: 60vh;
+      display:flex;
+      flex-direction:column;
+      justify-content:center;
+      align-items:center;
+    }
+    .about-bg::before {
+      content:"";
+      position:absolute;
+      top:0; left:0; right:0; bottom:0;
+      background: rgba(0,0,0,0.5);
+    }
+    .about-bg * {
+      position: relative;
+      z-index:1;
+    }
+    .card { background:white; padding:20px; margin:15px; border-radius:10px; box-shadow:0 2px 5px rgba(0,0,0,0.1); }
+    .branches { display:flex; flex-wrap:wrap; justify-content:center; }
+    footer { background:#2c3e50; color:white; text-align:center; padding:15px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Shalom Church</h1>
+  <p>Welcome to Our Church Family</p>
+</header>
+
+<nav>
+  <a href="#home">Home</a>
+  <a href="#about">About</a>
+  <a href="#branches">Branches</a>
+  <a href="#contact">Contact</a>
+</nav>
+
+<section id="home">
+  <h2>Welcome</h2>
+  <p>“Peace be with you.” - John 20:21</p>
+</section>
+
+<section id="about" class="about-bg">
+  <h2>About Us</h2>
+  <p>Shalom Church is a place of worship, love, and community where everyone is welcome.</p>
+</section>
+
+<section id="branches">
+  <h2>Our Branches</h2>
+  <div class="branches">
+    <div class="card">
+      <h3>Shalom Center</h3>
+    </div>
+    <div class="card">
+      <h3>Shalom Church City Campus</h3>
+    </div>
+    <div class="card">
+      <h3>Shalom Church Poovar Campus</h3>
+    </div>
+    <div class="card">
+      <h3>Shalom Mini Chapel</h3>
+    </div>
+  </div>
+</section>
+
+<section id="contact">
+  <h2>Contact Us</h2>
+  <p><strong>Address:</strong> Panniyode, Veeranakavu, Kerala 695575</p>
+  <p><strong>Location:</strong> <a href="https://maps.app.goo.gl/wQ18yBMtXPMsR7yb9" target="_blank">View on Google Maps</a></p>
+  <p>Email: info@shalomchurch.com</p>
+  <p>Phone: +91 00000 00000</p>
+</section>
+
+<footer>
+  <p>© 2026 Shalom Church. All Rights Reserved.</p>
+</footer>
+
+</body>
+</html>
