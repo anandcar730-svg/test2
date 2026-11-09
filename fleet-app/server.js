@@ -1,0 +1,655 @@
+'use strict';
+/**
+ * Fleet Driver Monitor — zero-dependency Node.js server (Node >= 22.13).
+ *
+ * Stores everything in SQLite (node:sqlite) under ./data and photos under ./data/uploads.
+ * Roles:
+ *   admin  – manages drivers & vehicles, sees every record, dashboard, CSV export.
+ *   driver – logs daily kilometers, CNG fills, oil change / service, accident reports.
+ */
+const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { DatabaseSync } = require('node:sqlite');
+
+process.env.TZ = process.env.TZ || 'Asia/Kolkata'; // dates ("today", monthly totals) follow this time zone
+const PORT = Number(process.env.PORT) || 3000;
+const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
+const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const SESSION_DAYS = 30;
+const MAX_BODY = 40 * 1024 * 1024; // 40 MB (several compressed photos)
+const OIL_ALERT_KM = 500; // warn when an oil change is due within this many km
+
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+// ---------------------------------------------------------------- database
+const db = new DatabaseSync(path.join(DATA_DIR, 'fleet.db'));
+db.exec(`
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  name TEXT NOT NULL,
+  phone TEXT,
+  license_no TEXT,
+  role TEXT NOT NULL CHECK (role IN ('admin','driver')),
+  pass_hash TEXT NOT NULL,
+  salt TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS vehicles (
+  id INTEGER PRIMARY KEY,
+  reg_no TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  model TEXT,
+  fuel_type TEXT NOT NULL DEFAULT 'CNG',
+  initial_km REAL NOT NULL DEFAULT 0,
+  oil_interval_km REAL NOT NULL DEFAULT 5000,
+  assigned_driver_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS trips (
+  id INTEGER PRIMARY KEY,
+  driver_id INTEGER NOT NULL REFERENCES users(id),
+  vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),
+  date TEXT NOT NULL,
+  start_km REAL NOT NULL,
+  end_km REAL,
+  start_photo TEXT,
+  end_photo TEXT,
+  notes TEXT,
+  started_at TEXT NOT NULL DEFAULT (datetime('now')),
+  ended_at TEXT
+);
+CREATE TABLE IF NOT EXISTS fuel_logs (
+  id INTEGER PRIMARY KEY,
+  driver_id INTEGER NOT NULL REFERENCES users(id),
+  vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),
+  date TEXT NOT NULL,
+  odometer REAL NOT NULL,
+  qty_kg REAL NOT NULL,
+  price_per_kg REAL,
+  amount REAL NOT NULL,
+  station TEXT,
+  photo TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS services (
+  id INTEGER PRIMARY KEY,
+  driver_id INTEGER NOT NULL REFERENCES users(id),
+  vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),
+  date TEXT NOT NULL,
+  odometer REAL NOT NULL,
+  type TEXT NOT NULL,
+  cost REAL NOT NULL DEFAULT 0,
+  garage TEXT,
+  next_due_km REAL,
+  photo TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS accidents (
+  id INTEGER PRIMARY KEY,
+  driver_id INTEGER NOT NULL REFERENCES users(id),
+  vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),
+  occurred_at TEXT NOT NULL,
+  odometer REAL NOT NULL,
+  location TEXT,
+  lat REAL,
+  lng REAL,
+  description TEXT NOT NULL,
+  severity TEXT NOT NULL DEFAULT 'minor',
+  injuries INTEGER NOT NULL DEFAULT 0,
+  third_party TEXT,
+  police_report TEXT,
+  status TEXT NOT NULL DEFAULT 'reported',
+  admin_notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS accident_photos (
+  id INTEGER PRIMARY KEY,
+  accident_id INTEGER NOT NULL REFERENCES accidents(id) ON DELETE CASCADE,
+  file TEXT NOT NULL
+);
+`);
+
+const q = (sql) => db.prepare(sql);
+const all = (sql, ...p) => q(sql).all(...p);
+const get = (sql, ...p) => q(sql).get(...p);
+const run = (sql, ...p) => q(sql).run(...p);
+
+// ---------------------------------------------------------------- auth helpers
+function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+  const hash = crypto.scryptSync(String(password), salt, 64).toString('hex');
+  return { hash, salt };
+}
+function verifyPassword(password, user) {
+  const { hash } = hashPassword(password, user.salt);
+  return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(user.pass_hash, 'hex'));
+}
+
+// First run: create an admin account.
+if (!get(`SELECT id FROM users WHERE role='admin' LIMIT 1`)) {
+  const pw = process.env.ADMIN_PASSWORD || 'admin123';
+  const { hash, salt } = hashPassword(pw);
+  run(`INSERT INTO users (username,name,role,pass_hash,salt) VALUES ('admin','Fleet Admin','admin',?,?)`, hash, salt);
+  console.log(`Created admin account  ->  username: admin   password: ${process.env.ADMIN_PASSWORD ? '(from ADMIN_PASSWORD)' : 'admin123'}`);
+  if (!process.env.ADMIN_PASSWORD) console.log('!! Change this password after your first login (Profile page).');
+}
+
+function parseCookies(req) {
+  const out = {};
+  for (const part of (req.headers.cookie || '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return out;
+}
+function currentUser(req) {
+  const token = parseCookies(req).sid;
+  if (!token) return null;
+  const row = get(
+    `SELECT u.id,u.username,u.name,u.phone,u.license_no,u.role,u.active,s.expires_at
+       FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?`, token);
+  if (!row || row.expires_at < Date.now() || !row.active) return null;
+  delete row.expires_at;
+  return row;
+}
+
+// ---------------------------------------------------------------- http helpers
+class HttpError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+const bad = (msg) => { throw new HttpError(400, msg); };
+
+function send(res, status, body, headers = {}) {
+  const isBuf = Buffer.isBuffer(body);
+  const payload = isBuf || typeof body === 'string' ? body : JSON.stringify(body);
+  res.writeHead(status, {
+    'Content-Type': isBuf || typeof body === 'string' ? 'text/plain; charset=utf-8' : 'application/json; charset=utf-8',
+    'X-Content-Type-Options': 'nosniff',
+    ...headers,
+  });
+  res.end(payload);
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_BODY) { reject(new HttpError(413, 'Upload too large')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      if (!chunks.length) return resolve({});
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+      catch { reject(new HttpError(400, 'Invalid JSON')); }
+    });
+    req.on('error', reject);
+  });
+}
+
+const num = (v, field, { required = true, min = 0 } = {}) => {
+  if (v === undefined || v === null || v === '') {
+    if (required) bad(`${field} is required`);
+    return null;
+  }
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < min) bad(`${field} must be a number${min === 0 ? ' ≥ 0' : ''}`);
+  return n;
+};
+const str = (v, field, { required = false, max = 2000 } = {}) => {
+  const s = v === undefined || v === null ? '' : String(v).trim();
+  if (required && !s) bad(`${field} is required`);
+  return s.slice(0, max) || null;
+};
+const isoDate = (v, field = 'date') => {
+  const s = str(v, field, { required: true });
+  if (!/^\d{4}-\d{2}-\d{2}/.test(s) || Number.isNaN(Date.parse(s))) bad(`${field} must be a valid date`);
+  return s;
+};
+
+/** Save a data-URL image (from the browser) and return the stored file name. */
+function saveImage(dataUrl) {
+  if (!dataUrl) return null;
+  const m = /^data:image\/(jpeg|jpg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl));
+  if (!m) bad('Photo must be a JPEG, PNG or WebP image');
+  const ext = m[1] === 'jpg' ? 'jpeg' : m[1];
+  const buf = Buffer.from(m[2], 'base64');
+  if (buf.length > 10 * 1024 * 1024) bad('Each photo must be under 10 MB');
+  const name = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.${ext === 'jpeg' ? 'jpg' : ext}`;
+  fs.writeFileSync(path.join(UPLOAD_DIR, name), buf);
+  return name;
+}
+
+// ---------------------------------------------------------------- domain helpers
+function vehicleOdometer(vehicleId) {
+  const r = get(`
+    SELECT MAX(km) AS km FROM (
+      SELECT initial_km AS km FROM vehicles WHERE id=:v
+      UNION ALL SELECT MAX(start_km) FROM trips WHERE vehicle_id=:v
+      UNION ALL SELECT MAX(end_km)   FROM trips WHERE vehicle_id=:v
+      UNION ALL SELECT MAX(odometer) FROM fuel_logs WHERE vehicle_id=:v
+      UNION ALL SELECT MAX(odometer) FROM services WHERE vehicle_id=:v
+      UNION ALL SELECT MAX(odometer) FROM accidents WHERE vehicle_id=:v
+    )`, { v: vehicleId });
+  return r?.km ?? 0;
+}
+
+function oilStatus(vehicle) {
+  const last = get(
+    `SELECT odometer, next_due_km, date FROM services
+      WHERE vehicle_id=? AND type='oil_change' ORDER BY odometer DESC LIMIT 1`, vehicle.id);
+  const current = vehicleOdometer(vehicle.id);
+  const base = last ? last.odometer : vehicle.initial_km;
+  const dueAt = last?.next_due_km || base + vehicle.oil_interval_km;
+  const remaining = dueAt - current;
+  return {
+    current_km: current,
+    last_oil_change_km: last?.odometer ?? null,
+    last_oil_change_date: last?.date ?? null,
+    oil_due_km: dueAt,
+    oil_remaining_km: remaining,
+    oil_status: remaining <= 0 ? 'overdue' : remaining <= OIL_ALERT_KM ? 'due_soon' : 'ok',
+  };
+}
+
+function getVehicle(id, user) {
+  const v = get(`SELECT * FROM vehicles WHERE id=?`, Number(id));
+  if (!v) bad('Vehicle not found');
+  if (user.role === 'driver' && !v.active) bad('This vehicle is not active');
+  return v;
+}
+
+/** Shared filter builder for list endpoints. Drivers only ever see their own rows. */
+function listFilters(user, query, dateCol, alias = 't') {
+  const where = [];
+  const params = {};
+  if (user.role === 'driver') { where.push(`${alias}.driver_id=:me`); params.me = user.id; }
+  else if (query.get('driver')) { where.push(`${alias}.driver_id=:driver`); params.driver = Number(query.get('driver')); }
+  if (query.get('vehicle')) { where.push(`${alias}.vehicle_id=:vehicle`); params.vehicle = Number(query.get('vehicle')); }
+  if (query.get('from')) { where.push(`substr(${dateCol},1,10)>=:from`); params.from = query.get('from'); }
+  if (query.get('to')) { where.push(`substr(${dateCol},1,10)<=:to`); params.to = query.get('to'); }
+  return { sql: where.length ? `WHERE ${where.join(' AND ')}` : '', params };
+}
+
+const JOIN_NAMES = (a) => `JOIN users u ON u.id=${a}.driver_id JOIN vehicles v ON v.id=${a}.vehicle_id`;
+
+const listers = {
+  trips(user, query) {
+    const f = listFilters(user, query, 't.date');
+    return all(`SELECT t.*, (t.end_km - t.start_km) AS distance_km, u.name AS driver_name, v.reg_no
+                FROM trips t ${JOIN_NAMES('t')} ${f.sql} ORDER BY t.date DESC, t.id DESC LIMIT 1000`, f.params);
+  },
+  fuel(user, query) {
+    const f = listFilters(user, query, 't.date');
+    return all(`SELECT t.*, u.name AS driver_name, v.reg_no
+                FROM fuel_logs t ${JOIN_NAMES('t')} ${f.sql} ORDER BY t.date DESC, t.id DESC LIMIT 1000`, f.params);
+  },
+  services(user, query) {
+    const f = listFilters(user, query, 't.date');
+    return all(`SELECT t.*, u.name AS driver_name, v.reg_no
+                FROM services t ${JOIN_NAMES('t')} ${f.sql} ORDER BY t.date DESC, t.id DESC LIMIT 1000`, f.params);
+  },
+  accidents(user, query) {
+    const f = listFilters(user, query, 't.occurred_at');
+    const rows = all(`SELECT t.*, u.name AS driver_name, v.reg_no
+                FROM accidents t ${JOIN_NAMES('t')} ${f.sql} ORDER BY t.occurred_at DESC, t.id DESC LIMIT 1000`, f.params);
+    const photos = q(`SELECT file FROM accident_photos WHERE accident_id=? ORDER BY id`);
+    for (const r of rows) r.photos = photos.all(r.id).map((p) => p.file);
+    return rows;
+  },
+};
+
+function toCsv(rows) {
+  if (!rows.length) return '';
+  const cols = Object.keys(rows[0]).filter((c) => !['pass_hash', 'salt'].includes(c));
+  const esc = (v) => {
+    if (v === null || v === undefined) return '';
+    const s = Array.isArray(v) ? v.join(' ') : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [cols.join(','), ...rows.map((r) => cols.map((c) => esc(r[c])).join(','))].join('\n');
+}
+
+// Local calendar date in the server's time zone (set TZ, e.g. TZ=Asia/Kolkata).
+const today = (offsetDays = 0) => new Date(Date.now() + offsetDays * 864e5).toLocaleDateString('en-CA');
+
+// ---------------------------------------------------------------- routes
+const routes = [];
+const route = (method, pattern, opts, handler) => {
+  if (typeof opts === 'function') { handler = opts; opts = {}; }
+  const keys = [];
+  const re = new RegExp('^' + pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$');
+  routes.push({ method, re, keys, handler, auth: opts.auth ?? 'user' });
+};
+
+// --- auth
+route('POST', '/api/login', { auth: 'none' }, async ({ body, res }) => {
+  const user = get(`SELECT * FROM users WHERE username=?`, String(body.username || '').trim());
+  if (!user || !user.active || !verifyPassword(body.password || '', user)) {
+    throw new HttpError(401, 'Wrong username or password');
+  }
+  const token = crypto.randomBytes(32).toString('hex');
+  run(`DELETE FROM sessions WHERE expires_at < ?`, Date.now());
+  run(`INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)`, token, user.id, Date.now() + SESSION_DAYS * 864e5);
+  res.setHeader('Set-Cookie', `sid=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_DAYS * 86400}`);
+  return { id: user.id, username: user.username, name: user.name, role: user.role };
+});
+route('POST', '/api/logout', { auth: 'none' }, ({ req, res }) => {
+  const token = parseCookies(req).sid;
+  if (token) run(`DELETE FROM sessions WHERE token=?`, token);
+  res.setHeader('Set-Cookie', 'sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+  return { ok: true };
+});
+route('GET', '/api/me', ({ user }) => user);
+route('POST', '/api/me/password', ({ user, body }) => {
+  const full = get(`SELECT * FROM users WHERE id=?`, user.id);
+  if (!verifyPassword(body.current || '', full)) bad('Current password is wrong');
+  if (String(body.next || '').length < 6) bad('New password must be at least 6 characters');
+  const { hash, salt } = hashPassword(body.next);
+  run(`UPDATE users SET pass_hash=?, salt=? WHERE id=?`, hash, salt, user.id);
+  return { ok: true };
+});
+
+// --- drivers (admin)
+route('GET', '/api/drivers', { auth: 'admin' }, () =>
+  all(`SELECT id,username,name,phone,license_no,role,active,created_at FROM users ORDER BY role, name`));
+route('POST', '/api/drivers', { auth: 'admin' }, ({ body }) => {
+  const username = str(body.username, 'Username', { required: true, max: 50 });
+  if (!/^[a-z0-9._-]{3,50}$/i.test(username)) bad('Username: 3+ letters/numbers, no spaces');
+  if (String(body.password || '').length < 6) bad('Password must be at least 6 characters');
+  if (get(`SELECT id FROM users WHERE username=?`, username)) bad('Username already taken');
+  const { hash, salt } = hashPassword(body.password);
+  const role = body.role === 'admin' ? 'admin' : 'driver';
+  const r = run(`INSERT INTO users (username,name,phone,license_no,role,pass_hash,salt) VALUES (?,?,?,?,?,?,?)`,
+    username, str(body.name, 'Name', { required: true, max: 100 }), str(body.phone, 'Phone', { max: 30 }),
+    str(body.license_no, 'License', { max: 50 }), role, hash, salt);
+  return { id: Number(r.lastInsertRowid) };
+});
+route('PUT', '/api/drivers/:id', { auth: 'admin' }, ({ params, body, user }) => {
+  const id = Number(params.id);
+  const target = get(`SELECT * FROM users WHERE id=?`, id);
+  if (!target) bad('User not found');
+  if (id === user.id && body.active === false) bad('You cannot deactivate yourself');
+  run(`UPDATE users SET name=?, phone=?, license_no=?, active=? WHERE id=?`,
+    str(body.name ?? target.name, 'Name', { required: true, max: 100 }),
+    str(body.phone ?? target.phone, 'Phone', { max: 30 }),
+    str(body.license_no ?? target.license_no, 'License', { max: 50 }),
+    body.active === undefined ? target.active : body.active ? 1 : 0, id);
+  if (body.password) {
+    if (String(body.password).length < 6) bad('Password must be at least 6 characters');
+    const { hash, salt } = hashPassword(body.password);
+    run(`UPDATE users SET pass_hash=?, salt=? WHERE id=?`, hash, salt, id);
+    run(`DELETE FROM sessions WHERE user_id=?`, id);
+  }
+  if (body.active === false) run(`DELETE FROM sessions WHERE user_id=?`, id);
+  return { ok: true };
+});
+
+// --- vehicles
+route('GET', '/api/vehicles', ({ user }) => {
+  const rows = all(`SELECT v.*, u.name AS driver_name FROM vehicles v LEFT JOIN users u ON u.id=v.assigned_driver_id
+                     ${user.role === 'driver' ? 'WHERE v.active=1' : ''} ORDER BY v.reg_no`);
+  return rows.map((v) => ({ ...v, ...oilStatus(v) }));
+});
+route('POST', '/api/vehicles', { auth: 'admin' }, ({ body }) => {
+  const reg = str(body.reg_no, 'Registration number', { required: true, max: 30 }).toUpperCase();
+  if (get(`SELECT id FROM vehicles WHERE reg_no=?`, reg)) bad('A vehicle with this registration already exists');
+  const r = run(`INSERT INTO vehicles (reg_no,model,fuel_type,initial_km,oil_interval_km,assigned_driver_id) VALUES (?,?,?,?,?,?)`,
+    reg, str(body.model, 'Model', { max: 100 }), str(body.fuel_type, 'Fuel', { max: 20 }) || 'CNG',
+    num(body.initial_km, 'Current odometer', { required: false }) ?? 0,
+    num(body.oil_interval_km, 'Oil change interval', { required: false }) || 5000,
+    body.assigned_driver_id ? Number(body.assigned_driver_id) : null);
+  return { id: Number(r.lastInsertRowid) };
+});
+route('PUT', '/api/vehicles/:id', { auth: 'admin' }, ({ params, body }) => {
+  const v = get(`SELECT * FROM vehicles WHERE id=?`, Number(params.id));
+  if (!v) bad('Vehicle not found');
+  run(`UPDATE vehicles SET model=?, fuel_type=?, oil_interval_km=?, assigned_driver_id=?, active=? WHERE id=?`,
+    str(body.model ?? v.model, 'Model', { max: 100 }),
+    str(body.fuel_type ?? v.fuel_type, 'Fuel', { max: 20 }) || 'CNG',
+    num(body.oil_interval_km ?? v.oil_interval_km, 'Oil change interval') || 5000,
+    body.assigned_driver_id === undefined ? v.assigned_driver_id : body.assigned_driver_id ? Number(body.assigned_driver_id) : null,
+    body.active === undefined ? v.active : body.active ? 1 : 0, v.id);
+  return { ok: true };
+});
+
+// --- daily kilometers (trips)
+route('GET', '/api/trips', ({ user, query }) => listers.trips(user, query));
+route('GET', '/api/trips/open', ({ user }) =>
+  all(`SELECT t.*, v.reg_no FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+        WHERE t.driver_id=? AND t.end_km IS NULL ORDER BY t.id DESC`, user.id));
+route('POST', '/api/trips', ({ user, body }) => {
+  const v = getVehicle(body.vehicle_id, user);
+  const open = get(`SELECT t.id, u.name FROM trips t JOIN users u ON u.id=t.driver_id
+                     WHERE t.vehicle_id=? AND t.end_km IS NULL`, v.id);
+  if (open) bad(`This vehicle already has an open trip (${open.name}). End it first.`);
+  const start = num(body.start_km, 'Starting kilometer');
+  const current = vehicleOdometer(v.id);
+  if (start < current) bad(`Starting kilometer cannot be lower than the last reading (${current} km)`);
+  const r = run(`INSERT INTO trips (driver_id,vehicle_id,date,start_km,start_photo,notes) VALUES (?,?,?,?,?,?)`,
+    user.id, v.id, body.date ? isoDate(body.date) : today(), start, saveImage(body.start_photo), str(body.notes, 'Notes'));
+  return { id: Number(r.lastInsertRowid) };
+});
+route('PUT', '/api/trips/:id/end', ({ user, params, body }) => {
+  const t = get(`SELECT * FROM trips WHERE id=?`, Number(params.id));
+  if (!t) bad('Trip not found');
+  if (user.role === 'driver' && t.driver_id !== user.id) throw new HttpError(403, 'Not your trip');
+  if (t.end_km !== null) bad('Trip already ended');
+  const end = num(body.end_km, 'Ending kilometer');
+  if (end < t.start_km) bad(`Ending kilometer must be at least the starting kilometer (${t.start_km})`);
+  if (end - t.start_km > 2000) bad('More than 2000 km in one trip — please check the reading');
+  run(`UPDATE trips SET end_km=?, end_photo=?, notes=COALESCE(?,notes), ended_at=datetime('now') WHERE id=?`,
+    end, saveImage(body.end_photo), str(body.notes, 'Notes'), t.id);
+  return { ok: true, distance_km: end - t.start_km };
+});
+
+// --- CNG fueling
+route('GET', '/api/fuel', ({ user, query }) => listers.fuel(user, query));
+route('POST', '/api/fuel', ({ user, body }) => {
+  const v = getVehicle(body.vehicle_id, user);
+  const qty = num(body.qty_kg, 'Quantity (kg)');
+  if (qty <= 0) bad('Quantity must be more than 0');
+  const price = num(body.price_per_kg, 'Price per kg', { required: false });
+  const amount = num(body.amount, 'Amount', { required: false }) ?? (price !== null ? +(price * qty).toFixed(2) : null);
+  if (amount === null) bad('Enter the total amount or the price per kg');
+  const r = run(`INSERT INTO fuel_logs (driver_id,vehicle_id,date,odometer,qty_kg,price_per_kg,amount,station,photo,notes)
+                 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    user.id, v.id, isoDate(body.date), num(body.odometer, 'Odometer'), qty,
+    price ?? +(amount / qty).toFixed(2), amount, str(body.station, 'Station', { max: 200 }),
+    saveImage(body.photo), str(body.notes, 'Notes'));
+  return { id: Number(r.lastInsertRowid) };
+});
+
+// --- oil change / service
+const SERVICE_TYPES = ['oil_change', 'general_service', 'tyre', 'brake', 'battery', 'cng_kit', 'other'];
+route('GET', '/api/services', ({ user, query }) => listers.services(user, query));
+route('POST', '/api/services', ({ user, body }) => {
+  const v = getVehicle(body.vehicle_id, user);
+  const type = SERVICE_TYPES.includes(body.type) ? body.type : bad('Choose a service type');
+  const odo = num(body.odometer, 'Odometer');
+  let next = num(body.next_due_km, 'Next due km', { required: false });
+  if (type === 'oil_change' && !next) next = odo + v.oil_interval_km;
+  if (next !== null && next <= odo) bad('Next due km must be higher than the current odometer');
+  const r = run(`INSERT INTO services (driver_id,vehicle_id,date,odometer,type,cost,garage,next_due_km,photo,notes)
+                 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    user.id, v.id, isoDate(body.date), odo, type, num(body.cost, 'Cost', { required: false }) ?? 0,
+    str(body.garage, 'Garage', { max: 200 }), next, saveImage(body.photo), str(body.notes, 'Notes'));
+  return { id: Number(r.lastInsertRowid) };
+});
+
+// --- accidents
+route('GET', '/api/accidents', ({ user, query }) => listers.accidents(user, query));
+route('POST', '/api/accidents', ({ user, body }) => {
+  const v = getVehicle(body.vehicle_id, user);
+  const photos = Array.isArray(body.photos) ? body.photos.slice(0, 8) : [];
+  if (!photos.length) bad('Please attach at least one photo of the accident');
+  const occurred = str(body.occurred_at, 'Date & time', { required: true });
+  if (Number.isNaN(Date.parse(occurred))) bad('Date & time is not valid');
+  const severity = ['minor', 'moderate', 'major'].includes(body.severity) ? body.severity : 'minor';
+  const lat = num(body.lat, 'Latitude', { required: false, min: -90 });
+  const lng = num(body.lng, 'Longitude', { required: false, min: -180 });
+  const files = photos.map(saveImage);
+  db.exec('BEGIN');
+  try {
+    const r = run(`INSERT INTO accidents (driver_id,vehicle_id,occurred_at,odometer,location,lat,lng,description,severity,injuries,third_party,police_report)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      user.id, v.id, occurred, num(body.odometer, 'Odometer'), str(body.location, 'Location', { max: 300 }),
+      lat, lng, str(body.description, 'Description', { required: true }), severity, body.injuries ? 1 : 0,
+      str(body.third_party, 'Third party', { max: 500 }), str(body.police_report, 'Police report', { max: 100 }));
+    const id = Number(r.lastInsertRowid);
+    for (const f of files) run(`INSERT INTO accident_photos (accident_id,file) VALUES (?,?)`, id, f);
+    db.exec('COMMIT');
+    return { id };
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+});
+route('PUT', '/api/accidents/:id', { auth: 'admin' }, ({ params, body }) => {
+  const a = get(`SELECT * FROM accidents WHERE id=?`, Number(params.id));
+  if (!a) bad('Accident not found');
+  const status = ['reported', 'in_review', 'insurance_claimed', 'closed'].includes(body.status) ? body.status : a.status;
+  run(`UPDATE accidents SET status=?, admin_notes=? WHERE id=?`, status, str(body.admin_notes ?? a.admin_notes, 'Notes'), a.id);
+  return { ok: true };
+});
+
+// --- delete (admin)
+const DELETABLE = { trips: 'trips', fuel: 'fuel_logs', services: 'services', accidents: 'accidents' };
+route('DELETE', '/api/:kind/:id', { auth: 'admin' }, ({ params }) => {
+  const table = DELETABLE[params.kind];
+  if (!table) throw new HttpError(404, 'Not found');
+  run(`DELETE FROM ${table} WHERE id=?`, Number(params.id));
+  return { ok: true };
+});
+
+// --- dashboard
+route('GET', '/api/dashboard', ({ user }) => {
+  const mine = user.role === 'driver';
+  const dw = mine ? 'AND driver_id=:me' : '';
+  const p = mine ? { me: user.id } : {};
+  const d = today();
+  const month = d.slice(0, 7);
+  const kmSum = (cond) => get(`SELECT COALESCE(SUM(end_km-start_km),0) AS km FROM trips WHERE end_km IS NOT NULL ${dw} AND ${cond}`, p).km;
+  const fuelSum = (cond) => get(`SELECT COALESCE(SUM(qty_kg),0) AS kg, COALESCE(SUM(amount),0) AS amount FROM fuel_logs WHERE 1=1 ${dw} AND ${cond}`, p);
+  const monthFuel = fuelSum(`substr(date,1,7)='${month}'`);
+  const monthKm = kmSum(`substr(date,1,7)='${month}'`);
+
+  const vehicles = all(`SELECT v.*, u.name AS driver_name FROM vehicles v LEFT JOIN users u ON u.id=v.assigned_driver_id
+                        WHERE v.active=1 ORDER BY v.reg_no`).map((v) => {
+    const s = oilStatus(v);
+    const mk = get(`SELECT COALESCE(SUM(end_km-start_km),0) AS km FROM trips WHERE vehicle_id=? AND end_km IS NOT NULL AND substr(date,1,7)=?`, v.id, month).km;
+    const mf = get(`SELECT COALESCE(SUM(qty_kg),0) AS kg, COALESCE(SUM(amount),0) AS amount FROM fuel_logs WHERE vehicle_id=? AND substr(date,1,7)=?`, v.id, month);
+    // Mileage from fill-to-fill odometer readings (more accurate than trip km)
+    const fills = all(`SELECT odometer, qty_kg FROM fuel_logs WHERE vehicle_id=? ORDER BY odometer`, v.id);
+    let eff = null;
+    if (fills.length >= 2) {
+      const kgUsed = fills.slice(1).reduce((s, f) => s + f.qty_kg, 0);
+      const dist = fills[fills.length - 1].odometer - fills[0].odometer;
+      if (kgUsed > 0 && dist > 0) eff = +(dist / kgUsed).toFixed(2);
+    }
+    return { id: v.id, reg_no: v.reg_no, model: v.model, driver_name: v.driver_name, month_km: mk,
+      month_fuel_kg: mf.kg, month_fuel_amount: mf.amount, km_per_kg: eff, ...s };
+  });
+
+  const daily = all(`SELECT date, SUM(end_km-start_km) AS km FROM trips WHERE end_km IS NOT NULL ${dw}
+                     AND date >= :since GROUP BY date ORDER BY date`, { ...p, since: today(-13) });
+
+  return {
+    today: { km: kmSum(`date='${d}'`), fuel: fuelSum(`date='${d}'`),
+      trips: get(`SELECT COUNT(*) AS n FROM trips WHERE date=:d ${dw}`, { ...p, d }).n },
+    month: { km: monthKm, fuel_kg: monthFuel.kg, fuel_amount: monthFuel.amount,
+      service_cost: get(`SELECT COALESCE(SUM(cost),0) AS c FROM services WHERE substr(date,1,7)='${month}' ${dw}`, p).c,
+      accidents: get(`SELECT COUNT(*) AS n FROM accidents WHERE substr(occurred_at,1,7)='${month}' ${dw}`, p).n,
+      cost_per_km: monthKm > 0 ? +(monthFuel.amount / monthKm).toFixed(2) : null },
+    open_accidents: get(`SELECT COUNT(*) AS n FROM accidents WHERE status!='closed' ${dw}`, p).n,
+    vehicles: mine ? vehicles.filter((v) => v.oil_status !== 'ok' || all(`SELECT 1 FROM trips WHERE vehicle_id=? AND driver_id=? LIMIT 1`, v.id, user.id).length) : vehicles,
+    daily,
+    active_trips: all(`SELECT t.id, t.start_km, t.date, t.started_at, u.name AS driver_name, v.reg_no FROM trips t
+                       ${JOIN_NAMES('t')} WHERE t.end_km IS NULL ${mine ? 'AND t.driver_id=:me' : ''} ORDER BY t.id DESC`, p),
+    recent_accidents: listers.accidents(user, new URLSearchParams()).slice(0, 5),
+  };
+});
+
+// --- CSV export
+route('GET', '/api/export/:kind', ({ user, params, query, res }) => {
+  const kind = params.kind.replace(/\.csv$/, '');
+  if (!listers[kind]) throw new HttpError(404, 'Unknown export');
+  res.csv = { name: `${kind}-${today()}.csv`, body: toCsv(listers[kind](user, query)) };
+});
+
+// ---------------------------------------------------------------- static files
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp',
+  '.webmanifest': 'application/manifest+json', '.ico': 'image/x-icon' };
+
+function serveFile(res, file, extraHeaders = {}) {
+  fs.readFile(file, (err, data) => {
+    if (err) return send(res, 404, 'Not found');
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
+      'X-Content-Type-Options': 'nosniff', ...extraHeaders });
+    res.end(data);
+  });
+}
+
+// ---------------------------------------------------------------- server
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  const pathname = decodeURIComponent(url.pathname);
+  try {
+    // Uploaded photos — only for logged-in users
+    if (pathname.startsWith('/uploads/')) {
+      if (!currentUser(req)) return send(res, 401, 'Login required');
+      const name = path.basename(pathname);
+      if (!/^[\w.-]+$/.test(name)) return send(res, 400, 'Bad file name');
+      return serveFile(res, path.join(UPLOAD_DIR, name), { 'Cache-Control': 'private, max-age=86400' });
+    }
+
+    if (pathname.startsWith('/api/')) {
+      for (const r of routes) {
+        if (r.method !== req.method) continue;
+        const m = r.re.exec(pathname);
+        if (!m) continue;
+        const params = Object.fromEntries(r.keys.map((k, i) => [k, m[i + 1]]));
+        const user = currentUser(req);
+        if (r.auth !== 'none' && !user) throw new HttpError(401, 'Please log in');
+        if (r.auth === 'admin' && user.role !== 'admin') throw new HttpError(403, 'Admins only');
+        // Basic CSRF protection: state-changing requests must come from our own page.
+        if (req.method !== 'GET' && req.headers['x-requested-with'] !== 'fleet-app') throw new HttpError(403, 'Bad request origin');
+        const body = req.method === 'GET' ? {} : await readBody(req);
+        const result = await r.handler({ req, res, user, params, body, query: url.searchParams });
+        if (res.csv) {
+          return send(res, 200, '﻿' + res.csv.body, { 'Content-Type': 'text/csv; charset=utf-8',
+            'Content-Disposition': `attachment; filename="${res.csv.name}"` });
+        }
+        return send(res, 200, result ?? { ok: true });
+      }
+      throw new HttpError(404, 'Not found');
+    }
+
+    // Static front-end (single page app)
+    const file = path.join(PUBLIC_DIR, path.normalize(pathname === '/' ? '/index.html' : pathname));
+    if (!file.startsWith(PUBLIC_DIR)) return send(res, 400, 'Bad path');
+    if (fs.existsSync(file) && fs.statSync(file).isFile()) return serveFile(res, file);
+    return serveFile(res, path.join(PUBLIC_DIR, 'index.html'));
+  } catch (err) {
+    const status = err.status || 500;
+    if (status === 500) console.error(err);
+    send(res, status, { error: status === 500 ? 'Server error' : err.message });
+  }
+});
+
+if (require.main === module) {
+  server.listen(PORT, () => console.log(`Fleet Driver Monitor running at http://localhost:${PORT}`));
+}
+module.exports = { server, db };
