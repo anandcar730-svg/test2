@@ -477,7 +477,7 @@ pages.drivers = async (main) => {
   main.innerHTML = `<h1>Drivers &amp; users</h1>
     <div class="card"><h2>Add driver</h2><form id="f"><div class="fields">
       <label><span>Full name *</span><input name="name" required></label>
-      <label><span>Username (for login) *</span><input name="username" required autocapitalize="off" pattern="[A-Za-z0-9_.\-]{3,50}"></label>
+      <label><span>Username (for login) *</span><input name="username" required autocapitalize="off"></label>
       <label><span>Password *</span><input name="password" type="text" minlength="6" required></label>
       <label><span>Phone</span><input name="phone" type="tel"></label>
       <label><span>Driving licence no.</span><input name="license_no"></label>

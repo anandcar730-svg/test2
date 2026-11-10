@@ -1,0 +1,1221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f766e">
+<meta name="description" content="Driver login and vehicle monitoring: daily kilometers, CNG fueling, oil change and service, accident reports with photos.">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Fleet Driver Monitor</title>
+<link rel="icon" id="favicon">
+<style>
+:root {
+  --bg: #f4f6f8; --card: #fff; --text: #111827; --muted: #6b7280; --line: #e5e7eb;
+  --brand: #0f766e; --brand-2: #14b8a6; --danger: #dc2626; --warn: #d97706; --ok: #16a34a;
+  --radius: 12px; --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0b1220; --card: #111a2b; --text: #e5e7eb; --muted: #9ca3af; --line: #1f2a3d; --shadow: none; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+a { color: var(--brand-2); }
+h1 { font-size: 1.35rem; margin: 0 0 12px; }
+h2 { font-size: 1.05rem; margin: 0 0 10px; }
+.muted { color: var(--muted); }
+.center { display: grid; place-items: center; min-height: 60vh; }
+
+/* layout */
+.topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px; background: var(--brand); color: #fff; }
+.topbar .title { font-weight: 700; flex: 1; }
+.topbar button { background: rgba(255,255,255,.15); color: #fff; border: 0; }
+.shell { display: flex; min-height: calc(100vh - 52px); }
+nav.side { width: 220px; padding: 12px; border-right: 1px solid var(--line); background: var(--card); }
+nav.side a { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 10px;
+  color: var(--text); text-decoration: none; margin-bottom: 2px; }
+nav.side a.active { background: color-mix(in srgb, var(--brand) 14%, transparent); color: var(--brand-2); font-weight: 600; }
+main { flex: 1; padding: 16px; max-width: 1100px; width: 100%; margin: 0 auto; padding-bottom: 90px; }
+@media (max-width: 760px) {
+  nav.side { position: fixed; bottom: 0; left: 0; right: 0; width: auto; display: flex; overflow-x: auto;
+    padding: 6px; border-right: 0; border-top: 1px solid var(--line); z-index: 10; }
+  nav.side a { flex-direction: column; gap: 0; font-size: 11px; padding: 6px 10px; min-width: 64px; text-align: center; }
+  nav.side a .ico { font-size: 20px; }
+}
+
+/* cards & grids */
+.card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
+  border: 1px solid var(--line); padding: 16px; margin-bottom: 16px; }
+.grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); margin-bottom: 16px; }
+.stat { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow); }
+.stat .v { font-size: 1.5rem; font-weight: 700; }
+.stat .l { color: var(--muted); font-size: .85rem; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.spacer { flex: 1; }
+
+/* forms */
+form .fields { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+label { display: block; font-size: .85rem; color: var(--muted); }
+label > span { display: block; margin-bottom: 4px; }
+input, select, textarea, button { font: inherit; }
+input, select, textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--bg); color: var(--text); }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand-2); outline-offset: 0; }
+textarea { min-height: 80px; resize: vertical; }
+.full { grid-column: 1 / -1; }
+.check { display: flex; align-items: center; gap: 8px; color: var(--text); }
+.check input { width: auto; }
+button, .btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 16px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer; text-decoration: none; font-weight: 500; }
+button.primary { background: var(--brand); color: #fff; border-color: var(--brand); }
+button.danger { color: var(--danger); }
+button.small { padding: 5px 10px; font-size: .85rem; }
+button:disabled { opacity: .6; cursor: wait; }
+.actions { margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* photo picker */
+.photos { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.photos img, .thumb { width: 84px; height: 84px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); cursor: zoom-in; }
+.photo-btn { display: inline-flex; align-items: center; justify-content: center; width: 84px; height: 84px;
+  border: 2px dashed var(--line); border-radius: 8px; color: var(--muted); cursor: pointer; font-size: 26px; }
+.photo-btn input { display: none; }
+.ph { position: relative; }
+.ph button { position: absolute; top: -6px; right: -6px; padding: 0 6px; border-radius: 99px; font-size: 12px; background: var(--danger); color: #fff; border: 0; }
+
+/* tables */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+td.wrap { white-space: normal; min-width: 200px; }
+th { color: var(--muted); font-weight: 600; font-size: .8rem; text-transform: uppercase; letter-spacing: .02em; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 99px; font-size: .75rem; font-weight: 600;
+  background: color-mix(in srgb, var(--muted) 18%, transparent); }
+.badge.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.badge.warn { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+.badge.danger { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); }
+.alert { padding: 10px 14px; border-radius: 10px; margin-bottom: 10px; border: 1px solid; }
+.alert.warn { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.alert.danger { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+
+/* bar chart */
+.bars { display: flex; align-items: flex-end; gap: 6px; height: 140px; padding-top: 10px; }
+.bars .b { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; font-size: 10px; color: var(--muted); }
+.bars .b i { display: block; width: 100%; max-width: 34px; background: var(--brand-2); border-radius: 6px 6px 0 0; min-height: 2px; }
+
+/* login */
+.login { max-width: 380px; margin: 10vh auto; padding: 0 16px; }
+.login .logo { width: 64px; height: 64px; margin-bottom: 10px; }
+
+/* toast & lightbox */
+#toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: #111827; color: #fff;
+  padding: 10px 16px; border-radius: 10px; opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 50; max-width: 90vw; }
+#toast.show { opacity: 1; }
+#toast.err { background: var(--danger); }
+.lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: grid; place-items: center; z-index: 60; cursor: zoom-out; }
+.lightbox img { max-width: 95vw; max-height: 92vh; border-radius: 8px; }
+dialog { border: 0; border-radius: var(--radius); padding: 18px; width: min(560px, 94vw); background: var(--card); color: var(--text); }
+dialog::backdrop { background: rgba(0,0,0,.5); }
+.filters { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); align-items: end; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<div id="app"><div class="center muted">Loading…</div></div>
+<div id="toast" role="status" aria-live="polite"></div>
+<script>
+/* Fleet Driver Monitor — single-file version for GitHub Pages / any static host.
+   All data is stored in this browser (IndexedDB). Share data between phones with Backup & Sync. */
+'use strict';
+/* Fleet Driver Monitor — single-page front end (no framework). */
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmt = (n, d = 0) => (n === null || n === undefined || n === '' ? '—' : Number(n).toLocaleString('en-IN', { maximumFractionDigits: d }));
+const money = (n) => (n === null || n === undefined ? '—' : '₹' + fmt(n, 2));
+const today = () => new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local time
+const nowLocal = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
+const SERVICE_LABEL = { oil_change: 'Oil change', general_service: 'General service', tyre: 'Tyre', brake: 'Brake',
+  battery: 'Battery', cng_kit: 'CNG kit', other: 'Other' };
+const STATUS_LABEL = { reported: 'Reported', in_review: 'In review', insurance_claimed: 'Insurance claimed', closed: 'Closed' };
+
+const state = { user: null, vehicles: [] };
+
+
+function toast(msg, isErr = false) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.className = 'show' + (isErr ? ' err' : '');
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => (t.className = ''), 3200);
+}
+
+// ------------------------------------------------------------------ photos
+/** Resize + compress a photo in the browser so uploads stay small on mobile data. */
+function compressImage(file, maxSide = 1600, quality = 0.8) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * scale);
+      c.height = Math.round(img.height * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read that image')); };
+    img.src = url;
+  });
+}
+
+/** Photo picker field. Returns HTML; wire with bindPhotoPickers(form). */
+function photoField(name, label, { multiple = false, required = false } = {}) {
+  return `<div class="full"><label><span>${esc(label)}${required ? ' *' : ''}</span></label>
+    <div class="photos" data-photos="${name}" data-multiple="${multiple}">
+      <label class="photo-btn" title="Take / choose photo">📷
+        <input type="file" accept="image/*" capture="environment" ${multiple ? 'multiple' : ''}></label>
+    </div></div>`;
+}
+function bindPhotoPickers(form) {
+  form._photos = {};
+  for (const box of $$('[data-photos]', form)) {
+    const name = box.dataset.photos;
+    const multiple = box.dataset.multiple === 'true';
+    form._photos[name] = [];
+    const input = $('input[type=file]', box);
+    const redraw = () => {
+      $$('.ph', box).forEach((n) => n.remove());
+      form._photos[name].forEach((src, i) => {
+        const d = document.createElement('div');
+        d.className = 'ph';
+        d.innerHTML = `<img src="${src}" alt=""><button type="button" aria-label="Remove">✕</button>`;
+        d.querySelector('button').onclick = () => { form._photos[name].splice(i, 1); redraw(); };
+        box.insertBefore(d, box.lastElementChild);
+      });
+      box.lastElementChild.style.display = !multiple && form._photos[name].length ? 'none' : '';
+    };
+    input.onchange = async () => {
+      try {
+        for (const f of [...input.files].slice(0, 8)) {
+          const data = await compressImage(f);
+          if (multiple) form._photos[name].push(data); else form._photos[name] = [data];
+        }
+      } catch (e) { toast(e.message, true); }
+      input.value = '';
+      redraw();
+    };
+  }
+}
+
+function lightbox(src) {
+  const d = document.createElement('div');
+  d.className = 'lightbox';
+  d.innerHTML = `<img src="${esc(src)}" alt="">`;
+  d.onclick = () => d.remove();
+  document.body.appendChild(d);
+}
+document.addEventListener('click', (e) => {
+  const img = e.target.closest('img.thumb');
+  if (img) lightbox(img.src);
+});
+
+// ------------------------------------------------------------------ form helpers
+const formData = (form) => Object.fromEntries(new FormData(form).entries());
+async function submitting(form, fn) {
+  const btn = $('button[type=submit]', form);
+  btn.disabled = true;
+  try { await fn(); } catch (e) { toast(e.message, true); } finally { btn.disabled = false; }
+}
+function vehicleSelect(name = 'vehicle_id', { includeAll = false } = {}) {
+  const mine = state.vehicles.find((v) => v.assigned_driver_id === state.user.id);
+  return `<select name="${name}" ${includeAll ? '' : 'required'}>
+    ${includeAll ? '<option value="">All vehicles</option>' : '<option value="">Select vehicle</option>'}
+    ${state.vehicles.filter((v) => includeAll || v.active).map((v) =>
+      `<option value="${v.id}" ${!includeAll && mine?.id === v.id ? 'selected' : ''}>${esc(v.reg_no)}${v.model ? ' – ' + esc(v.model) : ''}</option>`).join('')}
+  </select>`;
+}
+/** Pre-fill the odometer with the vehicle's last known reading whenever the vehicle changes. */
+function bindOdometer(form, field = 'odometer') {
+  const sel = $('select[name=vehicle_id]', form);
+  const input = $(`input[name=${field}]`, form);
+  const hint = $(`[data-hint=${field}]`, form);
+  const update = () => {
+    const v = state.vehicles.find((x) => String(x.id) === sel.value);
+    if (hint) hint.textContent = v ? `Last recorded: ${fmt(v.current_km)} km` : '';
+    if (input && v && !input.dataset.touched) input.placeholder = v.current_km;
+  };
+  input?.addEventListener('input', () => (input.dataset.touched = '1'));
+  sel.addEventListener('change', update);
+  update();
+}
+const kmField = (name, label, extra = '') =>
+  `<label><span>${label} *</span><input name="${name}" type="number" inputmode="decimal" step="0.1" min="0" required ${extra}>
+   <small class="muted" data-hint="${name}"></small></label>`;
+async function refreshVehicles() { state.vehicles = await api('/api/vehicles'); }
+
+function filtersBar(id, { dates = true } = {}) {
+  return `<form class="filters" id="${id}">
+    ${state.user.role === 'admin' ? `<label><span>Driver</span><select name="driver"><option value="">All drivers</option>${
+      (state.drivers || []).filter((d) => d.role === 'driver').map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></label>` : ''}
+    <label><span>Vehicle</span>${vehicleSelect('vehicle', { includeAll: true })}</label>
+    ${dates ? `<label><span>From</span><input type="date" name="from"></label><label><span>To</span><input type="date" name="to"></label>` : ''}
+    <div class="row"><button type="submit">Filter</button><a class="btn" data-export>⬇ CSV</a></div>
+  </form>`;
+}
+function bindFilters(form, kind, load) {
+  const qs = () => new URLSearchParams(Object.entries(formData(form)).filter(([, v]) => v)).toString();
+  const exportLink = $('[data-export]', form);
+  const sync = () => (exportLink.href = `/api/export/${kind}.csv?${qs()}`);
+  form.onsubmit = (e) => { e.preventDefault(); sync(); load(qs()); };
+  form.onchange = sync;
+  sync();
+  load('');
+}
+const delBtn = (kind, id) => (state.user.role === 'admin' ? `<button class="small danger" data-del="${kind}:${id}">Delete</button>` : '');
+function bindDeletes(root, reload) {
+  for (const b of $$('[data-del]', root)) {
+    b.onclick = async () => {
+      if (!confirm('Delete this record permanently?')) return;
+      const [kind, id] = b.dataset.del.split(':');
+      try { await api(`/api/${kind}/${id}`, { method: 'DELETE' }); toast('Deleted'); reload(); } catch (e) { toast(e.message, true); }
+    };
+  }
+}
+
+// ------------------------------------------------------------------ pages
+const pages = {};
+
+pages.dashboard = async (main) => {
+  const d = await api('/api/dashboard');
+  const isAdmin = state.user.role === 'admin';
+  const alerts = d.vehicles.filter((v) => v.oil_status !== 'ok');
+  const max = Math.max(1, ...d.daily.map((x) => x.km));
+  main.innerHTML = `
+    <h1>${isAdmin ? 'Fleet dashboard' : `Hello, ${esc(state.user.name)}`}</h1>
+    ${alerts.map((v) => `<div class="alert ${v.oil_status === 'overdue' ? 'danger' : 'warn'}">
+      🛢 <b>${esc(v.reg_no)}</b>: oil change ${v.oil_status === 'overdue'
+        ? `<b>overdue by ${fmt(-v.oil_remaining_km)} km</b>` : `due in ${fmt(v.oil_remaining_km)} km`} (at ${fmt(v.oil_due_km)} km)</div>`).join('')}
+    ${d.open_accidents ? `<div class="alert danger">⚠️ ${d.open_accidents} accident report(s) not closed. <a href="#/accidents">View</a></div>` : ''}
+    <div class="grid">
+      <div class="stat"><div class="v">${fmt(d.today.km, 1)}</div><div class="l">km today</div></div>
+      <div class="stat"><div class="v">${fmt(d.month.km, 1)}</div><div class="l">km this month</div></div>
+      <div class="stat"><div class="v">${fmt(d.month.fuel_kg, 2)} kg</div><div class="l">CNG this month</div></div>
+      <div class="stat"><div class="v">${money(d.month.fuel_amount)}</div><div class="l">CNG spend this month</div></div>
+      <div class="stat"><div class="v">${d.month.cost_per_km !== null ? money(d.month.cost_per_km) : '—'}</div><div class="l">Fuel cost / km</div></div>
+      <div class="stat"><div class="v">${money(d.month.service_cost)}</div><div class="l">Service spend this month</div></div>
+      <div class="stat"><div class="v">${d.month.accidents}</div><div class="l">Accidents this month</div></div>
+    </div>
+    <div class="card"><h2>Kilometers – last 14 days</h2>
+      ${d.daily.length ? `<div class="bars">${d.daily.map((x) => `<div class="b" title="${x.date}: ${fmt(x.km, 1)} km">
+        <small>${fmt(x.km)}</small><i style="height:${(x.km / max) * 100}%"></i><span>${x.date.slice(8)}</span></div>`).join('')}</div>`
+        : '<p class="muted">No completed trips yet.</p>'}
+    </div>
+    ${d.active_trips.length ? `<div class="card"><h2>On the road now</h2><div class="table-wrap"><table>
+      <tr><th>Vehicle</th><th>Driver</th><th>Started</th><th>Start km</th></tr>
+      ${d.active_trips.map((t) => `<tr><td>${esc(t.reg_no)}</td><td>${esc(t.driver_name)}</td><td>${esc(t.started_at)}</td><td>${fmt(t.start_km)}</td></tr>`).join('')}
+      </table></div></div>` : ''}
+    <div class="card"><h2>Vehicles</h2><div class="table-wrap"><table>
+      <tr><th>Vehicle</th><th>Driver</th><th>Odometer</th><th>Month km</th><th>Month CNG</th><th>Mileage</th><th>Oil change</th></tr>
+      ${d.vehicles.map((v) => `<tr><td><b>${esc(v.reg_no)}</b><br><small class="muted">${esc(v.model)}</small></td>
+        <td>${esc(v.driver_name || '—')}</td><td>${fmt(v.current_km)} km</td><td>${fmt(v.month_km, 1)}</td>
+        <td>${fmt(v.month_fuel_kg, 2)} kg<br><small class="muted">${money(v.month_fuel_amount)}</small></td>
+        <td>${v.km_per_kg ? fmt(v.km_per_kg, 2) + ' km/kg' : '—'}</td>
+        <td>${oilBadge(v)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No vehicles yet.</td></tr>'}
+      </table></div></div>
+    ${d.recent_accidents.length ? `<div class="card"><h2>Recent accidents</h2>${accidentTable(d.recent_accidents)}</div>` : ''}
+    ${!isAdmin ? `<div class="row"><a class="btn" href="#/trips">🚗 Daily km</a><a class="btn" href="#/fuel">⛽ CNG fill</a>
+      <a class="btn" href="#/services">🛢 Service</a><a class="btn" href="#/accidents">⚠️ Accident</a></div>` : ''}`;
+};
+const oilBadge = (v) => {
+  const cls = v.oil_status === 'overdue' ? 'danger' : v.oil_status === 'due_soon' ? 'warn' : 'ok';
+  const txt = v.oil_status === 'overdue' ? `Overdue ${fmt(-v.oil_remaining_km)} km` : `${fmt(v.oil_remaining_km)} km left`;
+  return `<span class="badge ${cls}">${txt}</span><br><small class="muted">due at ${fmt(v.oil_due_km)} km</small>`;
+};
+
+// --- daily kilometers
+pages.trips = async (main) => {
+  await refreshVehicles();
+  const open = await api('/api/trips/open');
+  main.innerHTML = `<h1>Daily kilometers</h1>
+    ${open.map((t) => `<div class="card"><h2>🟢 Trip in progress – ${esc(t.reg_no)}</h2>
+      <p class="muted">Started ${esc(t.date)} at <b>${fmt(t.start_km)} km</b>. Enter the odometer reading at the end of the day.</p>
+      <form data-end="${t.id}"><div class="fields">
+        ${kmField('end_km', 'Ending kilometer (odometer)', `min="${t.start_km}"`)}
+        <label class="full"><span>Notes</span><textarea name="notes" placeholder="Route, toll, remarks…"></textarea></label>
+        ${photoField('end_photo', 'Photo of odometer (end)')}
+      </div><div class="actions"><button class="primary" type="submit">End trip</button></div></form></div>`).join('')}
+    ${open.length ? '' : `<div class="card"><h2>Start your day</h2>
+      <form id="start"><div class="fields">
+        <label><span>Vehicle *</span>${vehicleSelect()}</label>
+        <label><span>Date *</span><input type="date" name="date" value="${today()}" required></label>
+        ${kmField('start_km', 'Starting kilometer (odometer)')}
+        ${photoField('start_photo', 'Photo of odometer (start)')}
+      </div><div class="actions"><button class="primary" type="submit">Start trip</button></div></form></div>`}
+    <div class="card"><h2>History</h2>${filtersBar('flt')}<div id="list"></div></div>`;
+
+  for (const f of $$('form[data-end]', main)) {
+    bindPhotoPickers(f);
+    f.onsubmit = (e) => { e.preventDefault(); submitting(f, async () => {
+      const r = await api(`/api/trips/${f.dataset.end}/end`, { method: 'PUT', body: { ...formData(f), end_photo: f._photos.end_photo[0] } });
+      toast(`Trip ended – ${fmt(r.distance_km, 1)} km driven`); route();
+    }); };
+  }
+  const start = $('#start', main);
+  if (start) {
+    bindPhotoPickers(start); bindOdometer(start, 'start_km');
+    start.onsubmit = (e) => { e.preventDefault(); submitting(start, async () => {
+      await api('/api/trips', { method: 'POST', body: { ...formData(start), start_photo: start._photos.start_photo[0] } });
+      toast('Trip started. Drive safe!'); route();
+    }); };
+  }
+  const load = async (qs) => {
+    const rows = await api('/api/trips?' + qs);
+    const total = rows.reduce((s, r) => s + (r.distance_km || 0), 0);
+    $('#list', main).innerHTML = `<p class="muted">${rows.length} trips · <b>${fmt(total, 1)} km</b> total</p><div class="table-wrap"><table>
+      <tr><th>Date</th><th>Vehicle</th>${state.user.role === 'admin' ? '<th>Driver</th>' : ''}<th>Start km</th><th>End km</th><th>Distance</th><th>Photos</th><th>Notes</th><th></th></tr>
+      ${rows.map((r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.reg_no)}</td>${state.user.role === 'admin' ? `<td>${esc(r.driver_name)}</td>` : ''}
+        <td>${fmt(r.start_km)}</td><td>${r.end_km === null ? '<span class="badge warn">open</span>' : fmt(r.end_km)}</td>
+        <td><b>${r.distance_km === null ? '—' : fmt(r.distance_km, 1) + ' km'}</b></td>
+        <td>${thumb(r.start_photo)} ${thumb(r.end_photo)}</td><td class="wrap">${esc(r.notes)}</td><td>${delBtn('trips', r.id)}</td></tr>`).join('')}
+      </table></div>`;
+    bindDeletes($('#list', main), () => load(qs));
+  };
+  bindFilters($('#flt', main), 'trips', load);
+};
+
+// --- CNG fuel
+pages.fuel = async (main) => {
+  await refreshVehicles();
+  main.innerHTML = `<h1>CNG fueling</h1>
+    <div class="card"><h2>Add CNG fill</h2><form id="f"><div class="fields">
+      <label><span>Vehicle *</span>${vehicleSelect()}</label>
+      <label><span>Date *</span><input type="date" name="date" value="${today()}" required></label>
+      ${kmField('odometer', 'Odometer at fill (km)')}
+      <label><span>Quantity (kg) *</span><input name="qty_kg" type="number" inputmode="decimal" step="0.01" min="0.01" required></label>
+      <label><span>Price per kg (₹)</span><input name="price_per_kg" type="number" inputmode="decimal" step="0.01" min="0"></label>
+      <label><span>Total amount (₹)</span><input name="amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="auto = qty × price"></label>
+      <label><span>CNG station</span><input name="station" placeholder="e.g. IGL Sector 18"></label>
+      <label class="full"><span>Notes</span><textarea name="notes"></textarea></label>
+      ${photoField('photo', 'Bill / meter photo')}
+    </div><div class="actions"><button class="primary" type="submit">Save CNG fill</button></div></form></div>
+    <div class="card"><h2>History</h2>${filtersBar('flt')}<div id="list"></div></div>`;
+  const f = $('#f', main);
+  bindPhotoPickers(f); bindOdometer(f);
+  const qty = $('[name=qty_kg]', f), price = $('[name=price_per_kg]', f), amt = $('[name=amount]', f);
+  const calc = () => { if (qty.value && price.value && !amt.dataset.touched) amt.value = (qty.value * price.value).toFixed(2); };
+  qty.oninput = calc; price.oninput = calc; amt.oninput = () => (amt.dataset.touched = amt.value ? '1' : '');
+  f.onsubmit = (e) => { e.preventDefault(); submitting(f, async () => {
+    await api('/api/fuel', { method: 'POST', body: { ...formData(f), photo: f._photos.photo[0] } });
+    toast('CNG fill saved'); route();
+  }); };
+  const load = async (qs) => {
+    const rows = await api('/api/fuel?' + qs);
+    const kg = rows.reduce((s, r) => s + r.qty_kg, 0), amount = rows.reduce((s, r) => s + r.amount, 0);
+    $('#list', main).innerHTML = `<p class="muted">${rows.length} fills · <b>${fmt(kg, 2)} kg</b> · <b>${money(amount)}</b></p><div class="table-wrap"><table>
+      <tr><th>Date</th><th>Vehicle</th>${state.user.role === 'admin' ? '<th>Driver</th>' : ''}<th>Odometer</th><th>Qty</th><th>₹/kg</th><th>Amount</th><th>Station</th><th>Photo</th><th></th></tr>
+      ${rows.map((r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.reg_no)}</td>${state.user.role === 'admin' ? `<td>${esc(r.driver_name)}</td>` : ''}
+        <td>${fmt(r.odometer)}</td><td>${fmt(r.qty_kg, 2)} kg</td><td>${fmt(r.price_per_kg, 2)}</td><td><b>${money(r.amount)}</b></td>
+        <td>${esc(r.station)}</td><td>${thumb(r.photo)}</td><td>${delBtn('fuel', r.id)}</td></tr>`).join('')}
+      </table></div>`;
+    bindDeletes($('#list', main), () => load(qs));
+  };
+  bindFilters($('#flt', main), 'fuel', load);
+};
+
+// --- oil change / service
+pages.services = async (main) => {
+  await refreshVehicles();
+  main.innerHTML = `<h1>Oil change &amp; service</h1>
+    <div class="card"><h2>Add service record</h2><form id="f"><div class="fields">
+      <label><span>Vehicle *</span>${vehicleSelect()}</label>
+      <label><span>Type *</span><select name="type" required>${Object.entries(SERVICE_LABEL).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></label>
+      <label><span>Date *</span><input type="date" name="date" value="${today()}" required></label>
+      ${kmField('odometer', 'Odometer at service (km)')}
+      <label><span>Cost (₹)</span><input name="cost" type="number" inputmode="decimal" step="0.01" min="0"></label>
+      <label><span>Garage / workshop</span><input name="garage"></label>
+      <label><span>Next due at (km)</span><input name="next_due_km" type="number" inputmode="decimal" min="0">
+        <small class="muted" id="nexthint"></small></label>
+      <label class="full"><span>Work done / parts replaced</span><textarea name="notes" placeholder="Engine oil 5W-30, oil filter, air filter…"></textarea></label>
+      ${photoField('photo', 'Bill photo')}
+    </div><div class="actions"><button class="primary" type="submit">Save service</button></div></form></div>
+    <div class="card"><h2>Oil change status</h2><div class="table-wrap"><table>
+      <tr><th>Vehicle</th><th>Odometer</th><th>Last oil change</th><th>Status</th></tr>
+      ${state.vehicles.filter((v) => v.active).map((v) => `<tr><td>${esc(v.reg_no)}</td><td>${fmt(v.current_km)} km</td>
+        <td>${v.last_oil_change_km !== null ? `${fmt(v.last_oil_change_km)} km<br><small class="muted">${esc(v.last_oil_change_date)}</small>` : '—'}</td>
+        <td>${oilBadge(v)}</td></tr>`).join('')}</table></div></div>
+    <div class="card"><h2>History</h2>${filtersBar('flt')}<div id="list"></div></div>`;
+  const f = $('#f', main);
+  bindPhotoPickers(f); bindOdometer(f);
+  const hint = () => {
+    const v = state.vehicles.find((x) => String(x.id) === $('[name=vehicle_id]', f).value);
+    const odo = Number($('[name=odometer]', f).value);
+    $('#nexthint', f).textContent = $('[name=type]', f).value === 'oil_change' && v && odo
+      ? `Leave blank for default: ${fmt(odo + v.oil_interval_km)} km (every ${fmt(v.oil_interval_km)} km)` : '';
+  };
+  f.oninput = hint; f.onchange = hint;
+  f.onsubmit = (e) => { e.preventDefault(); submitting(f, async () => {
+    await api('/api/services', { method: 'POST', body: { ...formData(f), photo: f._photos.photo[0] } });
+    toast('Service record saved'); route();
+  }); };
+  const load = async (qs) => {
+    const rows = await api('/api/services?' + qs);
+    $('#list', main).innerHTML = `<p class="muted">${rows.length} records · <b>${money(rows.reduce((s, r) => s + r.cost, 0))}</b></p><div class="table-wrap"><table>
+      <tr><th>Date</th><th>Vehicle</th><th>Type</th>${state.user.role === 'admin' ? '<th>Driver</th>' : ''}<th>Odometer</th><th>Next due</th><th>Cost</th><th>Garage</th><th>Details</th><th>Bill</th><th></th></tr>
+      ${rows.map((r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.reg_no)}</td><td>${SERVICE_LABEL[r.type] || esc(r.type)}</td>
+        ${state.user.role === 'admin' ? `<td>${esc(r.driver_name)}</td>` : ''}<td>${fmt(r.odometer)}</td><td>${fmt(r.next_due_km)}</td>
+        <td>${money(r.cost)}</td><td>${esc(r.garage)}</td><td class="wrap">${esc(r.notes)}</td><td>${thumb(r.photo)}</td><td>${delBtn('services', r.id)}</td></tr>`).join('')}
+      </table></div>`;
+    bindDeletes($('#list', main), () => load(qs));
+  };
+  bindFilters($('#flt', main), 'services', load);
+};
+
+// --- accidents
+function accidentTable(rows) {
+  const admin = state.user.role === 'admin';
+  return `<div class="table-wrap"><table>
+    <tr><th>When</th><th>Vehicle</th>${admin ? '<th>Driver</th>' : ''}<th>Odometer</th><th>Severity</th><th>Location</th><th>Description</th><th>Photos</th><th>Status</th><th></th></tr>
+    ${rows.map((r) => `<tr><td>${esc(r.occurred_at.replace('T', ' '))}</td><td>${esc(r.reg_no)}</td>${admin ? `<td>${esc(r.driver_name)}</td>` : ''}
+      <td>${fmt(r.odometer)} km</td>
+      <td><span class="badge ${r.severity === 'major' ? 'danger' : r.severity === 'moderate' ? 'warn' : ''}">${esc(r.severity)}</span>${r.injuries ? '<br><span class="badge danger">injuries</span>' : ''}</td>
+      <td class="wrap">${esc(r.location)}${r.lat !== null ? `<br><a target="_blank" rel="noopener" href="https://maps.google.com/?q=${r.lat},${r.lng}">📍 map</a>` : ''}</td>
+      <td class="wrap">${esc(r.description)}${r.third_party ? `<br><small class="muted">Other party: ${esc(r.third_party)}</small>` : ''}
+        ${r.police_report ? `<br><small class="muted">FIR/Report: ${esc(r.police_report)}</small>` : ''}
+        ${r.admin_notes ? `<br><small><b>Admin:</b> ${esc(r.admin_notes)}</small>` : ''}</td>
+      <td><div class="photos">${r.photos.map(thumb).join('')}</div></td>
+      <td><span class="badge ${r.status === 'closed' ? 'ok' : 'warn'}">${STATUS_LABEL[r.status] || esc(r.status)}</span></td>
+      <td>${admin ? `<button class="small" data-acc="${r.id}">Update</button> ${delBtn('accidents', r.id)}` : ''}</td></tr>`).join('')}
+    </table></div>`;
+}
+pages.accidents = async (main) => {
+  await refreshVehicles();
+  main.innerHTML = `<h1>Accident reports</h1>
+    <div class="card"><h2>Report an accident</h2>
+      <p class="muted">Make sure everyone is safe first. Take clear photos of the damage, the number plates, and the odometer.</p>
+      <form id="f"><div class="fields">
+      <label><span>Vehicle *</span>${vehicleSelect()}</label>
+      <label><span>Date &amp; time *</span><input type="datetime-local" name="occurred_at" value="${nowLocal()}" required></label>
+      ${kmField('odometer', 'Odometer reading (km)')}
+      <label><span>Severity *</span><select name="severity"><option value="minor">Minor (scratch/dent)</option>
+        <option value="moderate">Moderate</option><option value="major">Major</option></select></label>
+      <label class="full"><span>Location</span><div class="row"><input name="location" style="flex:1" placeholder="Road / landmark">
+        <button type="button" id="gps">📍 Use my location</button></div>
+        <input type="hidden" name="lat"><input type="hidden" name="lng"><small class="muted" id="gpsinfo"></small></label>
+      <label class="full"><span>What happened? *</span><textarea name="description" required></textarea></label>
+      <label><span>Other vehicle / party details</span><input name="third_party" placeholder="Vehicle no., name, phone"></label>
+      <label><span>Police report / FIR no.</span><input name="police_report"></label>
+      <label class="check full"><input type="checkbox" name="injuries" value="1"> Someone was injured</label>
+      ${photoField('photos', 'Accident photos (up to 8)', { multiple: true, required: true })}
+    </div><div class="actions"><button class="primary" type="submit">Submit accident report</button></div></form></div>
+    <div class="card"><h2>All reports</h2>${filtersBar('flt')}<div id="list"></div></div>
+    <dialog id="dlg"><form method="dialog" id="df"><h2>Update accident</h2><div class="fields">
+      <label class="full"><span>Status</span><select name="status">${Object.entries(STATUS_LABEL).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></label>
+      <label class="full"><span>Admin notes</span><textarea name="admin_notes" placeholder="Insurance claim no., repair cost, action taken…"></textarea></label>
+    </div><div class="actions"><button class="primary" type="submit">Save</button><button type="button" id="dc">Cancel</button></div></form></dialog>`;
+  const f = $('#f', main);
+  bindPhotoPickers(f); bindOdometer(f);
+  $('#gps', f).onclick = () => {
+    if (!navigator.geolocation) return toast('Location not available on this device', true);
+    $('#gpsinfo', f).textContent = 'Getting location…';
+    navigator.geolocation.getCurrentPosition((p) => {
+      f.lat.value = p.coords.latitude.toFixed(6); f.lng.value = p.coords.longitude.toFixed(6);
+      $('#gpsinfo', f).textContent = `GPS: ${f.lat.value}, ${f.lng.value} (±${Math.round(p.coords.accuracy)} m)`;
+      if (!f.location.value) f.location.value = `GPS ${f.lat.value}, ${f.lng.value}`;
+    }, (err) => { $('#gpsinfo', f).textContent = ''; toast('Could not get location: ' + err.message, true); },
+    { enableHighAccuracy: true, timeout: 15000 });
+  };
+  f.onsubmit = (e) => { e.preventDefault(); submitting(f, async () => {
+    if (!f._photos.photos.length) throw new Error('Please attach at least one photo');
+    await api('/api/accidents', { method: 'POST', body: { ...formData(f), injuries: f.injuries.checked, photos: f._photos.photos } });
+    toast('Accident report saved. Send it to your admin from Backup & Sync.'); route();
+  }); };
+  let rows = [];
+  const dlg = $('#dlg', main), df = $('#df', main);
+  $('#dc', main).onclick = () => dlg.close();
+  const load = async (qs) => {
+    rows = await api('/api/accidents?' + qs);
+    $('#list', main).innerHTML = rows.length ? accidentTable(rows) : '<p class="muted">No accident reports. 👍</p>';
+    bindDeletes($('#list', main), () => load(qs));
+    for (const b of $$('[data-acc]', main)) b.onclick = () => {
+      const r = rows.find((x) => String(x.id) === b.dataset.acc);
+      df.status.value = r.status; df.admin_notes.value = r.admin_notes || '';
+      df.onsubmit = async (e) => { e.preventDefault();
+        try { await api(`/api/accidents/${r.id}`, { method: 'PUT', body: formData(df) }); dlg.close(); toast('Updated'); load(qs); }
+        catch (err) { toast(err.message, true); } };
+      dlg.showModal();
+    };
+  };
+  bindFilters($('#flt', main), 'accidents', load);
+};
+
+// --- vehicles (admin)
+pages.vehicles = async (main) => {
+  await refreshVehicles();
+  const drivers = (state.drivers = await api('/api/drivers')).filter((d) => d.role === 'driver' && d.active);
+  const driverOpts = (sel) => `<option value="">— none —</option>${drivers.map((d) => `<option value="${d.id}" ${sel === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}`;
+  main.innerHTML = `<h1>Vehicles</h1>
+    <div class="card"><h2>Add vehicle</h2><form id="f"><div class="fields">
+      <label><span>Registration no. *</span><input name="reg_no" required placeholder="DL01AB1234" style="text-transform:uppercase"></label>
+      <label><span>Make / model</span><input name="model" placeholder="Maruti WagonR CNG"></label>
+      <label><span>Fuel</span><select name="fuel_type"><option>CNG</option><option>CNG + Petrol</option><option>Petrol</option><option>Diesel</option><option>EV</option></select></label>
+      <label><span>Current odometer (km)</span><input name="initial_km" type="number" min="0" step="0.1" value="0"></label>
+      <label><span>Oil change every (km)</span><input name="oil_interval_km" type="number" min="100" value="5000"></label>
+      <label><span>Assigned driver</span><select name="assigned_driver_id">${driverOpts()}</select></label>
+    </div><div class="actions"><button class="primary" type="submit">Add vehicle</button></div></form></div>
+    <div class="card"><h2>Fleet</h2><div class="table-wrap"><table>
+      <tr><th>Reg. no.</th><th>Model</th><th>Fuel</th><th>Odometer</th><th>Oil interval</th><th>Driver</th><th>Oil change</th><th>Active</th></tr>
+      ${state.vehicles.map((v) => `<tr data-v="${v.id}"><td><b>${esc(v.reg_no)}</b></td><td>${esc(v.model)}</td><td>${esc(v.fuel_type)}</td>
+        <td>${fmt(v.current_km)} km</td>
+        <td><input type="number" min="100" value="${v.oil_interval_km}" data-k="oil_interval_km" style="width:100px"></td>
+        <td><select data-k="assigned_driver_id">${driverOpts(v.assigned_driver_id)}</select></td>
+        <td>${oilBadge(v)}</td><td><input type="checkbox" data-k="active" ${v.active ? 'checked' : ''}></td></tr>`).join('')}
+    </table></div></div>`;
+  const f = $('#f', main);
+  f.onsubmit = (e) => { e.preventDefault(); submitting(f, async () => {
+    await api('/api/vehicles', { method: 'POST', body: formData(f) }); toast('Vehicle added'); route();
+  }); };
+  for (const input of $$('[data-k]', main)) input.onchange = async () => {
+    const id = input.closest('tr').dataset.v;
+    const val = input.type === 'checkbox' ? input.checked : input.value;
+    try { await api(`/api/vehicles/${id}`, { method: 'PUT', body: { [input.dataset.k]: val } }); toast('Saved'); }
+    catch (e) { toast(e.message, true); }
+  };
+};
+
+// --- drivers (admin)
+pages.drivers = async (main) => {
+  const users = (state.drivers = await api('/api/drivers'));
+  main.innerHTML = `<h1>Drivers &amp; users</h1>
+    <div class="card"><h2>Add driver</h2><form id="f"><div class="fields">
+      <label><span>Full name *</span><input name="name" required></label>
+      <label><span>Username (for login) *</span><input name="username" required autocapitalize="off"></label>
+      <label><span>Password *</span><input name="password" type="text" minlength="6" required></label>
+      <label><span>Phone</span><input name="phone" type="tel"></label>
+      <label><span>Driving licence no.</span><input name="license_no"></label>
+      <label><span>Role</span><select name="role"><option value="driver">Driver</option><option value="admin">Admin / supervisor</option></select></label>
+    </div><div class="actions"><button class="primary" type="submit">Create login</button></div></form></div>
+    <div class="card"><h2>All users</h2><div class="table-wrap"><table>
+      <tr><th>Name</th><th>Username</th><th>Role</th><th>Phone</th><th>Licence</th><th>Status</th><th></th></tr>
+      ${users.map((u) => `<tr><td>${esc(u.name)}</td><td>${esc(u.username)}</td><td>${esc(u.role)}</td><td>${esc(u.phone)}</td>
+        <td>${esc(u.license_no)}</td><td><span class="badge ${u.active ? 'ok' : ''}">${u.active ? 'active' : 'disabled'}</span></td>
+        <td class="row"><button class="small" data-pw="${u.id}">Reset password</button>
+        ${u.id !== state.user.id ? `<button class="small ${u.active ? 'danger' : ''}" data-act="${u.id}:${u.active ? 0 : 1}">${u.active ? 'Disable' : 'Enable'}</button>` : ''}</td></tr>`).join('')}
+    </table></div></div>`;
+  const f = $('#f', main);
+  f.onsubmit = (e) => { e.preventDefault(); submitting(f, async () => {
+    await api('/api/drivers', { method: 'POST', body: formData(f) }); toast('Login created'); route();
+  }); };
+  for (const b of $$('[data-pw]', main)) b.onclick = async () => {
+    const pw = prompt('New password (min 6 characters):');
+    if (!pw) return;
+    try { await api(`/api/drivers/${b.dataset.pw}`, { method: 'PUT', body: { password: pw } }); toast('Password changed'); } catch (e) { toast(e.message, true); }
+  };
+  for (const b of $$('[data-act]', main)) b.onclick = async () => {
+    const [id, active] = b.dataset.act.split(':');
+    try { await api(`/api/drivers/${id}`, { method: 'PUT', body: { active: active === '1' } }); route(); } catch (e) { toast(e.message, true); }
+  };
+};
+
+// --- profile
+pages.profile = async (main) => {
+  const u = state.user;
+  main.innerHTML = `<h1>My profile</h1>
+    <div class="card"><p><b>${esc(u.name)}</b> (${esc(u.username)}) · ${esc(u.role)}</p>
+      ${u.phone ? `<p>📞 ${esc(u.phone)}</p>` : ''}${u.license_no ? `<p>🪪 ${esc(u.license_no)}</p>` : ''}</div>
+    <div class="card"><h2>Change password</h2><form id="f"><div class="fields">
+      <label><span>Current password</span><input type="password" name="current" required autocomplete="current-password"></label>
+      <label><span>New password</span><input type="password" name="next" minlength="6" required autocomplete="new-password"></label>
+    </div><div class="actions"><button class="primary" type="submit">Update password</button></div></form></div>`;
+  const f = $('#f', main);
+  f.onsubmit = (e) => { e.preventDefault(); submitting(f, async () => {
+    await api('/api/me/password', { method: 'POST', body: formData(f) }); toast('Password updated'); f.reset();
+  }); };
+};
+
+// ------------------------------------------------------------------ shell & routing
+const NAV = [
+  ['dashboard', '📊', 'Dashboard'], ['trips', '🚗', 'Daily km'], ['fuel', '⛽', 'CNG'],
+  ['services', '🛢', 'Service'], ['accidents', '⚠️', 'Accidents'], ['backup', '🔄', 'Backup & Sync'],
+  ['vehicles', '🚐', 'Vehicles', 'admin'], ['drivers', '👤', 'Drivers', 'admin'], ['profile', '⚙️', 'Profile'],
+];
+
+function renderLoginServer() {
+  $('#app').innerHTML = `<div class="login card">
+    <img class="logo" src="/icon.svg" alt=""><h1>Fleet Driver Monitor</h1>
+    <p class="muted">Log in with the username and password given by your fleet admin.</p>
+    <form id="lf"><div class="fields" style="grid-template-columns:1fr">
+      <label><span>Username</span><input name="username" required autocapitalize="off" autocomplete="username"></label>
+      <label><span>Password</span><input name="password" type="password" required autocomplete="current-password"></label>
+    </div><div class="actions"><button class="primary" type="submit" style="width:100%;justify-content:center">Log in</button></div></form></div>`;
+  const f = $('#lf');
+  f.onsubmit = (e) => { e.preventDefault(); submitting(f, async () => {
+    state.user = await api('/api/login', { method: 'POST', body: formData(f) });
+    state.user = await api('/api/me');
+    location.hash = '#/dashboard'; render();
+  }); };
+}
+
+function renderShell() {
+  const items = NAV.filter((n) => !n[3] || n[3] === state.user.role);
+  $('#app').innerHTML = `<header class="topbar"><span class="title">🚐 Fleet Monitor</span>
+      <span class="muted" style="color:#ccfbf1">${esc(state.user.name)}</span><button id="lo">Log out</button></header>
+    <div class="shell"><nav class="side">${items.map(([k, i, l]) => `<a href="#/${k}" data-nav="${k}"><span class="ico">${i}</span>${l}</a>`).join('')}</nav>
+    <main id="main"></main></div>`;
+  $('#lo').onclick = async () => { await api('/api/logout', { method: 'POST' }).catch(() => {}); state.user = null; render(); };
+}
+
+async function route() {
+  if (!state.user) return;
+  let page = location.hash.replace(/^#\/?/, '') || 'dashboard';
+  const nav = NAV.find((n) => n[0] === page);
+  if (!nav || (nav[3] && nav[3] !== state.user.role)) page = 'dashboard';
+  $$('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === page));
+  const main = $('#main');
+  main.innerHTML = '<p class="muted">Loading…</p>';
+  try {
+    if (state.user.role === 'admin' && !state.drivers) state.drivers = await api('/api/drivers');
+    if (!state.vehicles.length) await refreshVehicles();
+    await pages[page](main);
+  } catch (e) { main.innerHTML = `<div class="alert danger">${esc(e.message)}</div>`; }
+  window.scrollTo(0, 0);
+}
+
+async function render() {
+  if (!state.user) {
+    try { state.user = await api('/api/me'); } catch { state.user = null; }
+  }
+  if (!state.user) { state.vehicles = []; state.drivers = null; return renderLogin(); }
+  renderShell();
+  route();
+}
+window.addEventListener('hashchange', route);
+
+'use strict';
+/* =====================================================================
+ * Local "backend": everything is stored in this browser (IndexedDB).
+ * Mimics the /api/* endpoints of the server version so the UI is shared.
+ * Devices exchange data with Backup & Sync files (export → import/merge).
+ * ===================================================================== */
+const ICON = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#0f766e"/><path d="M12 38l5-12a5 5 0 0 1 4.6-3h20.8a5 5 0 0 1 4.6 3l5 12v8a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2v-2H19v2a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2z" fill="#fff"/><circle cx="20" cy="38" r="3" fill="#0f766e"/><circle cx="44" cy="38" r="3" fill="#0f766e"/><path d="M18 34l3.5-8h21l3.5 8z" fill="#99f6e4"/></svg>');
+const COLLECTIONS = ['users', 'vehicles', 'trips', 'fuel_logs', 'services', 'accidents'];
+const OIL_ALERT_KM = 500;
+const SESSION_KEY = 'fleet_session_user';
+const DB = Object.fromEntries(COLLECTIONS.map((c) => [c, []]));
+let idb;
+
+// ------------------------------------------------------------------ IndexedDB
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const r = indexedDB.open('fleet-monitor', 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore('data'); r.result.createObjectStore('photos'); };
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+}
+function idbReq(store, mode, fn) {
+  return new Promise((resolve, reject) => {
+    const tx = idb.transaction(store, mode);
+    const req = fn(tx.objectStore(store));
+    tx.oncomplete = () => resolve(req?.result);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Storage is full'));
+  });
+}
+const save = (coll) => idbReq('data', 'readwrite', (s) => s.put(DB[coll], coll));
+const photoGet = (id) => idbReq('photos', 'readonly', (s) => s.get(id));
+const photoPut = (id, data) => idbReq('photos', 'readwrite', (s) => s.put(data, id));
+async function loadDB() {
+  idb = await idbOpen();
+  for (const c of COLLECTIONS) DB[c] = (await idbReq('data', 'readonly', (s) => s.get(c))) || [];
+  navigator.storage?.persist?.().catch(() => {});
+}
+
+// ------------------------------------------------------------------ helpers
+class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
+const bad = (m) => { throw new HttpError(400, m); };
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+const stamp = () => new Date().toISOString();
+const localDay = (offset = 0) => new Date(Date.now() + offset * 864e5).toLocaleDateString('en-CA');
+const localDateTime = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16).replace('T', ' '); };
+const live = (c) => DB[c].filter((r) => !r.deleted);
+const byId = (c, id) => live(c).find((r) => r.id === id);
+const num = (v, field, { required = true, min = 0 } = {}) => {
+  if (v === undefined || v === null || v === '') { if (required) bad(`${field} is required`); return null; }
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < min) bad(`${field} must be a number${min === 0 ? ' ≥ 0' : ''}`);
+  return n;
+};
+const str = (v, field, { required = false, max = 2000 } = {}) => {
+  const s = v === undefined || v === null ? '' : String(v).trim();
+  if (required && !s) bad(`${field} is required`);
+  return s.slice(0, max) || null;
+};
+const isoDate = (v, field = 'date') => {
+  const s = str(v, field, { required: true });
+  if (!/^\d{4}-\d{2}-\d{2}/.test(s) || Number.isNaN(Date.parse(s))) bad(`${field} must be a valid date`);
+  return s;
+};
+async function insert(coll, rec) {
+  const row = { id: uid(), created_at: stamp(), updated_at: stamp(), ...rec };
+  DB[coll].push(row); await save(coll); return row;
+}
+async function patch(coll, row, changes) { Object.assign(row, changes, { updated_at: stamp() }); await save(coll); }
+
+async function hashPassword(password, salt = uid()) {
+  if (!crypto.subtle) bad('Open this page over https:// (e.g. GitHub Pages) so passwords can be secured');
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(String(password)), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: new TextEncoder().encode(salt), iterations: 120000, hash: 'SHA-256' }, key, 256);
+  return { hash: [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, '0')).join(''), salt };
+}
+async function verifyPassword(pw, user) { return (await hashPassword(pw, user.salt)).hash === user.pass_hash; }
+const publicUser = (u) => u && { id: u.id, username: u.username, name: u.name, phone: u.phone, license_no: u.license_no, role: u.role, active: u.active, created_at: u.created_at };
+
+async function saveImage(dataUrl) {
+  if (!dataUrl) return null;
+  if (!/^data:image\/(jpeg|png|webp);base64,/.test(dataUrl)) bad('Photo must be an image');
+  const id = 'p_' + uid();
+  await photoPut(id, dataUrl);
+  return id;
+}
+
+// ------------------------------------------------------------------ domain
+function vehicleOdometer(vid) {
+  const v = byId('vehicles', vid);
+  let km = v ? v.initial_km : 0;
+  for (const t of live('trips')) if (t.vehicle_id === vid) km = Math.max(km, t.start_km, t.end_km ?? 0);
+  for (const c of ['fuel_logs', 'services', 'accidents']) for (const r of live(c)) if (r.vehicle_id === vid) km = Math.max(km, r.odometer);
+  return km;
+}
+function oilStatus(v) {
+  const last = live('services').filter((s) => s.vehicle_id === v.id && s.type === 'oil_change').sort((a, b) => b.odometer - a.odometer)[0];
+  const current = vehicleOdometer(v.id);
+  const dueAt = last?.next_due_km || (last ? last.odometer : v.initial_km) + v.oil_interval_km;
+  const remaining = dueAt - current;
+  return { current_km: current, last_oil_change_km: last?.odometer ?? null, last_oil_change_date: last?.date ?? null,
+    oil_due_km: dueAt, oil_remaining_km: remaining, oil_status: remaining <= 0 ? 'overdue' : remaining <= OIL_ALERT_KM ? 'due_soon' : 'ok' };
+}
+function getVehicle(id, user) {
+  const v = byId('vehicles', id);
+  if (!v) bad('Choose a vehicle');
+  if (user.role === 'driver' && !v.active) bad('This vehicle is not active');
+  return v;
+}
+function withNames(r) {
+  return { ...r, driver_name: byId('users', r.driver_id)?.name ?? '(unknown)', reg_no: byId('vehicles', r.vehicle_id)?.reg_no ?? '(unknown)' };
+}
+function filtered(coll, user, query, dateField) {
+  const g = (k) => query.get(k) || '';
+  return live(coll).filter((r) =>
+    (user.role === 'driver' ? r.driver_id === user.id : !g('driver') || r.driver_id === g('driver')) &&
+    (!g('vehicle') || r.vehicle_id === g('vehicle')) &&
+    (!g('from') || String(r[dateField]).slice(0, 10) >= g('from')) &&
+    (!g('to') || String(r[dateField]).slice(0, 10) <= g('to')))
+    .sort((a, b) => String(b[dateField]).localeCompare(String(a[dateField])) || b.created_at.localeCompare(a.created_at))
+    .map(withNames);
+}
+const listers = {
+  trips: (u, q) => filtered('trips', u, q, 'date').map((t) => ({ ...t, distance_km: t.end_km === null ? null : t.end_km - t.start_km })),
+  fuel: (u, q) => filtered('fuel_logs', u, q, 'date'),
+  services: (u, q) => filtered('services', u, q, 'date'),
+  accidents: (u, q) => filtered('accidents', u, q, 'occurred_at'),
+};
+function toCsv(rows) {
+  if (!rows.length) return '';
+  const cols = Object.keys(rows[0]).filter((c) => !['pass_hash', 'salt', 'deleted', 'driver_id', 'vehicle_id'].includes(c));
+  const esc = (v) => { if (v === null || v === undefined) return ''; const s = Array.isArray(v) ? `${v.length} photo(s)` : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  return [cols.join(','), ...rows.map((r) => cols.map((c) => esc(r[c])).join(','))].join('\n');
+}
+
+function currentUser() {
+  let id = null;
+  try { id = localStorage.getItem(SESSION_KEY); } catch {}
+  const u = id && byId('users', id);
+  return u && u.active ? u : null;
+}
+
+// ------------------------------------------------------------------ routes
+const routes = [];
+const r = (method, pattern, auth, handler) => {
+  const keys = [];
+  const re = new RegExp('^' + pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$');
+  routes.push({ method, re, keys, auth, handler });
+};
+const SERVICE_TYPES = ['oil_change', 'general_service', 'tyre', 'brake', 'battery', 'cng_kit', 'other'];
+
+r('POST', '/api/login', 'none', async ({ body }) => {
+  const u = live('users').find((x) => x.username.toLowerCase() === String(body.username || '').trim().toLowerCase());
+  if (!u || !u.active || !(await verifyPassword(body.password || '', u))) throw new HttpError(401, 'Wrong username or password');
+  try { localStorage.setItem(SESSION_KEY, u.id); } catch {}
+  return publicUser(u);
+});
+r('POST', '/api/logout', 'none', () => { try { localStorage.removeItem(SESSION_KEY); } catch {} return { ok: true }; });
+r('GET', '/api/me', 'user', ({ user }) => publicUser(user));
+r('POST', '/api/me/password', 'user', async ({ user, body }) => {
+  if (!(await verifyPassword(body.current || '', user))) bad('Current password is wrong');
+  if (String(body.next || '').length < 6) bad('New password must be at least 6 characters');
+  const { hash, salt } = await hashPassword(body.next);
+  await patch('users', user, { pass_hash: hash, salt });
+  return { ok: true };
+});
+
+r('GET', '/api/drivers', 'admin', () => live('users').map(publicUser).sort((a, b) => a.role.localeCompare(b.role) || a.name.localeCompare(b.name)));
+r('POST', '/api/drivers', 'admin', async ({ body }) => {
+  const username = str(body.username, 'Username', { required: true, max: 50 });
+  if (!/^[a-z0-9._-]{3,50}$/i.test(username)) bad('Username: 3+ letters/numbers, no spaces');
+  if (String(body.password || '').length < 6) bad('Password must be at least 6 characters');
+  if (live('users').some((u) => u.username.toLowerCase() === username.toLowerCase())) bad('Username already taken');
+  const { hash, salt } = await hashPassword(body.password);
+  const u = await insert('users', { username, name: str(body.name, 'Name', { required: true, max: 100 }), phone: str(body.phone, 'Phone', { max: 30 }),
+    license_no: str(body.license_no, 'License', { max: 50 }), role: body.role === 'admin' ? 'admin' : 'driver', pass_hash: hash, salt, active: 1 });
+  return { id: u.id };
+});
+r('PUT', '/api/drivers/:id', 'admin', async ({ params, body, user }) => {
+  const t = byId('users', params.id);
+  if (!t) bad('User not found');
+  if (t.id === user.id && body.active === false) bad('You cannot deactivate yourself');
+  const ch = { name: str(body.name ?? t.name, 'Name', { required: true }), phone: str(body.phone ?? t.phone, 'Phone'),
+    license_no: str(body.license_no ?? t.license_no, 'License'), active: body.active === undefined ? t.active : body.active ? 1 : 0 };
+  if (body.password) {
+    if (String(body.password).length < 6) bad('Password must be at least 6 characters');
+    Object.assign(ch, await hashPassword(body.password).then(({ hash, salt }) => ({ pass_hash: hash, salt })));
+  }
+  await patch('users', t, ch);
+  return { ok: true };
+});
+
+r('GET', '/api/vehicles', 'user', ({ user }) =>
+  live('vehicles').filter((v) => user.role === 'admin' || v.active).sort((a, b) => a.reg_no.localeCompare(b.reg_no))
+    .map((v) => ({ ...v, driver_name: byId('users', v.assigned_driver_id)?.name ?? null, ...oilStatus(v) })));
+r('POST', '/api/vehicles', 'admin', async ({ body }) => {
+  const reg = str(body.reg_no, 'Registration number', { required: true, max: 30 }).toUpperCase();
+  if (live('vehicles').some((v) => v.reg_no === reg)) bad('A vehicle with this registration already exists');
+  const v = await insert('vehicles', { reg_no: reg, model: str(body.model, 'Model'), fuel_type: str(body.fuel_type, 'Fuel') || 'CNG',
+    initial_km: num(body.initial_km, 'Current odometer', { required: false }) ?? 0,
+    oil_interval_km: num(body.oil_interval_km, 'Oil change interval', { required: false }) || 5000,
+    assigned_driver_id: body.assigned_driver_id || null, active: 1 });
+  return { id: v.id };
+});
+r('PUT', '/api/vehicles/:id', 'admin', async ({ params, body }) => {
+  const v = byId('vehicles', params.id);
+  if (!v) bad('Vehicle not found');
+  await patch('vehicles', v, {
+    model: str(body.model ?? v.model, 'Model'), fuel_type: str(body.fuel_type ?? v.fuel_type, 'Fuel') || 'CNG',
+    oil_interval_km: num(body.oil_interval_km ?? v.oil_interval_km, 'Oil change interval') || 5000,
+    assigned_driver_id: body.assigned_driver_id === undefined ? v.assigned_driver_id : body.assigned_driver_id || null,
+    active: body.active === undefined ? v.active : body.active ? 1 : 0 });
+  return { ok: true };
+});
+
+r('GET', '/api/trips', 'user', ({ user, query }) => listers.trips(user, query));
+r('GET', '/api/trips/open', 'user', ({ user }) => live('trips').filter((t) => t.driver_id === user.id && t.end_km === null).map(withNames));
+r('POST', '/api/trips', 'user', async ({ user, body }) => {
+  const v = getVehicle(body.vehicle_id, user);
+  const open = live('trips').find((t) => t.vehicle_id === v.id && t.end_km === null);
+  if (open) bad(`This vehicle already has an open trip (${byId('users', open.driver_id)?.name}). End it first.`);
+  const start = num(body.start_km, 'Starting kilometer');
+  const cur = vehicleOdometer(v.id);
+  if (start < cur) bad(`Starting kilometer cannot be lower than the last reading (${cur} km)`);
+  const t = await insert('trips', { driver_id: user.id, vehicle_id: v.id, date: body.date ? isoDate(body.date) : localDay(), start_km: start,
+    end_km: null, start_photo: await saveImage(body.start_photo), end_photo: null, notes: str(body.notes, 'Notes'), started_at: localDateTime(), ended_at: null });
+  return { id: t.id };
+});
+r('PUT', '/api/trips/:id/end', 'user', async ({ user, params, body }) => {
+  const t = byId('trips', params.id);
+  if (!t) bad('Trip not found');
+  if (user.role === 'driver' && t.driver_id !== user.id) throw new HttpError(403, 'Not your trip');
+  if (t.end_km !== null) bad('Trip already ended');
+  const end = num(body.end_km, 'Ending kilometer');
+  if (end < t.start_km) bad(`Ending kilometer must be at least the starting kilometer (${t.start_km})`);
+  if (end - t.start_km > 2000) bad('More than 2000 km in one trip — please check the reading');
+  await patch('trips', t, { end_km: end, end_photo: await saveImage(body.end_photo), notes: str(body.notes, 'Notes') ?? t.notes, ended_at: localDateTime() });
+  return { ok: true, distance_km: end - t.start_km };
+});
+
+r('GET', '/api/fuel', 'user', ({ user, query }) => listers.fuel(user, query));
+r('POST', '/api/fuel', 'user', async ({ user, body }) => {
+  const v = getVehicle(body.vehicle_id, user);
+  const qty = num(body.qty_kg, 'Quantity (kg)');
+  if (qty <= 0) bad('Quantity must be more than 0');
+  const price = num(body.price_per_kg, 'Price per kg', { required: false });
+  const amount = num(body.amount, 'Amount', { required: false }) ?? (price !== null ? +(price * qty).toFixed(2) : null);
+  if (amount === null) bad('Enter the total amount or the price per kg');
+  const f = await insert('fuel_logs', { driver_id: user.id, vehicle_id: v.id, date: isoDate(body.date), odometer: num(body.odometer, 'Odometer'),
+    qty_kg: qty, price_per_kg: price ?? +(amount / qty).toFixed(2), amount, station: str(body.station, 'Station'),
+    photo: await saveImage(body.photo), notes: str(body.notes, 'Notes') });
+  return { id: f.id };
+});
+
+r('GET', '/api/services', 'user', ({ user, query }) => listers.services(user, query));
+r('POST', '/api/services', 'user', async ({ user, body }) => {
+  const v = getVehicle(body.vehicle_id, user);
+  const type = SERVICE_TYPES.includes(body.type) ? body.type : bad('Choose a service type');
+  const odo = num(body.odometer, 'Odometer');
+  let next = num(body.next_due_km, 'Next due km', { required: false });
+  if (type === 'oil_change' && !next) next = odo + v.oil_interval_km;
+  if (next !== null && next <= odo) bad('Next due km must be higher than the current odometer');
+  const s = await insert('services', { driver_id: user.id, vehicle_id: v.id, date: isoDate(body.date), odometer: odo, type,
+    cost: num(body.cost, 'Cost', { required: false }) ?? 0, garage: str(body.garage, 'Garage'), next_due_km: next,
+    photo: await saveImage(body.photo), notes: str(body.notes, 'Notes') });
+  return { id: s.id };
+});
+
+r('GET', '/api/accidents', 'user', ({ user, query }) => listers.accidents(user, query));
+r('POST', '/api/accidents', 'user', async ({ user, body }) => {
+  const v = getVehicle(body.vehicle_id, user);
+  const photos = Array.isArray(body.photos) ? body.photos.slice(0, 8) : [];
+  if (!photos.length) bad('Please attach at least one photo of the accident');
+  const occurred = str(body.occurred_at, 'Date & time', { required: true });
+  if (Number.isNaN(Date.parse(occurred))) bad('Date & time is not valid');
+  const odometer = num(body.odometer, 'Odometer');
+  const description = str(body.description, 'Description', { required: true });
+  const ids = [];
+  for (const p of photos) ids.push(await saveImage(p));
+  const a = await insert('accidents', { driver_id: user.id, vehicle_id: v.id, occurred_at: occurred, odometer,
+    location: str(body.location, 'Location'), lat: num(body.lat, 'Latitude', { required: false, min: -90 }),
+    lng: num(body.lng, 'Longitude', { required: false, min: -180 }), description,
+    severity: ['minor', 'moderate', 'major'].includes(body.severity) ? body.severity : 'minor', injuries: body.injuries ? 1 : 0,
+    third_party: str(body.third_party, 'Third party'), police_report: str(body.police_report, 'Police report'),
+    status: 'reported', admin_notes: null, photos: ids });
+  return { id: a.id };
+});
+r('PUT', '/api/accidents/:id', 'admin', async ({ params, body }) => {
+  const a = byId('accidents', params.id);
+  if (!a) bad('Accident not found');
+  await patch('accidents', a, { status: ['reported', 'in_review', 'insurance_claimed', 'closed'].includes(body.status) ? body.status : a.status,
+    admin_notes: str(body.admin_notes ?? a.admin_notes, 'Notes') });
+  return { ok: true };
+});
+
+const DELETABLE = { trips: 'trips', fuel: 'fuel_logs', services: 'services', accidents: 'accidents' };
+r('DELETE', '/api/:kind/:id', 'admin', async ({ params }) => {
+  const coll = DELETABLE[params.kind];
+  const row = coll && byId(coll, params.id);
+  if (!row) throw new HttpError(404, 'Not found');
+  await patch(coll, row, { deleted: true }); // tombstone so the delete also syncs to other devices
+  return { ok: true };
+});
+
+r('GET', '/api/dashboard', 'user', ({ user }) => {
+  const mine = user.role === 'driver';
+  const own = (c) => live(c).filter((x) => !mine || x.driver_id === user.id);
+  const d = localDay(), month = d.slice(0, 7), since = localDay(-13);
+  const trips = own('trips').filter((t) => t.end_km !== null), fuel = own('fuel_logs');
+  const sum = (rows, f) => rows.reduce((s, x) => s + (f(x) || 0), 0);
+  const km = (rows) => sum(rows, (t) => t.end_km - t.start_km);
+  const monthKm = km(trips.filter((t) => t.date.startsWith(month)));
+  const mFuel = fuel.filter((f) => f.date.startsWith(month)), tFuel = fuel.filter((f) => f.date === d);
+  const daily = {};
+  for (const t of trips) if (t.date >= since) daily[t.date] = (daily[t.date] || 0) + (t.end_km - t.start_km);
+  const vehicles = live('vehicles').filter((v) => v.active).sort((a, b) => a.reg_no.localeCompare(b.reg_no)).map((v) => {
+    const vf = live('fuel_logs').filter((f) => f.vehicle_id === v.id).sort((a, b) => a.odometer - b.odometer);
+    let eff = null;
+    if (vf.length >= 2) { const kg = sum(vf.slice(1), (f) => f.qty_kg), dist = vf.at(-1).odometer - vf[0].odometer; if (kg > 0 && dist > 0) eff = +(dist / kg).toFixed(2); }
+    const vmf = vf.filter((f) => f.date.startsWith(month));
+    return { id: v.id, reg_no: v.reg_no, model: v.model, driver_name: byId('users', v.assigned_driver_id)?.name ?? null,
+      month_km: km(live('trips').filter((t) => t.vehicle_id === v.id && t.end_km !== null && t.date.startsWith(month))),
+      month_fuel_kg: sum(vmf, (f) => f.qty_kg), month_fuel_amount: sum(vmf, (f) => f.amount), km_per_kg: eff, ...oilStatus(v),
+      _mine: v.assigned_driver_id === user.id || live('trips').some((t) => t.vehicle_id === v.id && t.driver_id === user.id) };
+  });
+  const mFuelAmt = sum(mFuel, (f) => f.amount);
+  return {
+    today: { km: km(trips.filter((t) => t.date === d)), fuel: { kg: sum(tFuel, (f) => f.qty_kg), amount: sum(tFuel, (f) => f.amount) },
+      trips: own('trips').filter((t) => t.date === d).length },
+    month: { km: monthKm, fuel_kg: sum(mFuel, (f) => f.qty_kg), fuel_amount: mFuelAmt,
+      service_cost: sum(own('services').filter((s) => s.date.startsWith(month)), (s) => s.cost),
+      accidents: own('accidents').filter((a) => a.occurred_at.startsWith(month)).length,
+      cost_per_km: monthKm > 0 ? +(mFuelAmt / monthKm).toFixed(2) : null },
+    open_accidents: own('accidents').filter((a) => a.status !== 'closed').length,
+    vehicles: mine ? vehicles.filter((v) => v._mine || v.oil_status !== 'ok') : vehicles,
+    daily: Object.entries(daily).sort().map(([date, k]) => ({ date, km: k })),
+    active_trips: own('trips').filter((t) => t.end_km === null).map(withNames),
+    recent_accidents: listers.accidents(user, new URLSearchParams()).slice(0, 5),
+  };
+});
+
+/** Drop-in replacement for fetch-based api(): runs the request against local storage. */
+async function api(path, { method = 'GET', body } = {}) {
+  const url = new URL(path, 'http://local');
+  for (const rt of routes) {
+    if (rt.method !== method) continue;
+    const m = rt.re.exec(url.pathname);
+    if (!m) continue;
+    const params = Object.fromEntries(rt.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
+    try {
+      const user = currentUser();
+      if (rt.auth !== 'none' && !user) throw new HttpError(401, 'Please log in');
+      if (rt.auth === 'admin' && user.role !== 'admin') throw new HttpError(403, 'Admins only');
+      return JSON.parse(JSON.stringify((await rt.handler({ user, params, body: body || {}, query: url.searchParams })) ?? { ok: true }));
+    } catch (e) {
+      if (e.status === 401 && state.user && path !== '/api/login' && path !== '/api/me') { state.user = null; render(); }
+      if (e.name === 'QuotaExceededError') throw new Error('Phone storage is full. Make a backup, then free some space.');
+      throw e;
+    }
+  }
+  throw new Error('Not found: ' + path);
+}
+
+// ------------------------------------------------------------------ photos & CSV in the page
+const thumb = (id) => (id ? `<img class="thumb" data-photo="${esc(id)}" alt="photo" loading="lazy">` : '');
+async function hydratePhotos(root = document) {
+  for (const img of root.querySelectorAll('img[data-photo]:not([src])')) {
+    img.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACw='; // placeholder while loading
+    photoGet(img.dataset.photo).then((src) => { img.src = src || 'data:image/gif;base64,R0lGODlhAQABAAAAACw='; if (!src) img.title = 'Photo not on this device yet'; });
+  }
+}
+new MutationObserver(() => hydratePhotos()).observe(document.documentElement, { childList: true, subtree: true });
+
+function download(name, blob) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('a[data-export]');
+  if (!a) return;
+  e.preventDefault();
+  const u = new URL(a.getAttribute('href'), 'http://local');
+  const kind = u.pathname.split('/').pop().replace('.csv', '');
+  const rows = listers[kind](currentUser(), u.searchParams);
+  if (!rows.length) return toast('Nothing to export', true);
+  download(`${kind}-${localDay()}.csv`, new Blob(['﻿' + toCsv(rows)], { type: 'text/csv' }));
+});
+
+// ------------------------------------------------------------------ backup & sync
+async function buildBackup() {
+  const photos = {};
+  const ids = new Set();
+  for (const c of ['trips', 'fuel_logs', 'services', 'accidents']) for (const x of DB[c]) {
+    if (x.deleted) continue;
+    [x.start_photo, x.end_photo, x.photo, ...(x.photos || [])].forEach((p) => p && ids.add(p));
+  }
+  for (const id of ids) { const d = await photoGet(id); if (d) photos[id] = d; }
+  return { app: 'fleet-driver-monitor', version: 1, exported_at: stamp(), exported_by: state.user?.name || null, data: DB, photos };
+}
+async function exportBackup() {
+  const json = JSON.stringify(await buildBackup());
+  const who = (state.user?.username || 'device').replace(/[^\w-]/g, '');
+  const name = `fleet-backup-${who}-${localDay()}.json`;
+  const file = new File([json], name, { type: 'application/json' });
+  if (navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: 'Fleet backup', text: `Fleet data from ${state.user?.name || 'device'}` }); return 'shared'; }
+    catch (e) { if (e.name === 'AbortError') return 'cancelled'; }
+  }
+  download(name, file);
+  return 'downloaded';
+}
+async function importBackup(file) {
+  let data;
+  try { data = JSON.parse(await file.text()); } catch { throw new Error('This is not a valid backup file'); }
+  if (data?.app !== 'fleet-driver-monitor' || !data.data) throw new Error('This is not a Fleet Driver Monitor backup file');
+  const stats = { added: 0, updated: 0, photos: 0 };
+  for (const c of COLLECTIONS) {
+    const incoming = Array.isArray(data.data[c]) ? data.data[c] : [];
+    const index = new Map(DB[c].map((x, i) => [x.id, i]));
+    for (const rec of incoming) {
+      if (!rec?.id) continue;
+      if (!index.has(rec.id)) { DB[c].push(rec); stats.added++; }
+      else if ((rec.updated_at || '') > (DB[c][index.get(rec.id)].updated_at || '')) { DB[c][index.get(rec.id)] = rec; stats.updated++; }
+    }
+    await save(c);
+  }
+  for (const [id, d] of Object.entries(data.photos || {})) {
+    if (/^p_[\w-]+$/.test(id) && /^data:image\//.test(d) && !(await photoGet(id))) { await photoPut(id, d); stats.photos++; }
+  }
+  return stats;
+}
+
+pages.backup = async (main) => {
+  const isAdmin = state.user.role === 'admin';
+  const est = await navigator.storage?.estimate?.().catch(() => null);
+  main.innerHTML = `<h1>Backup &amp; Sync</h1>
+    <div class="card"><h2>How data moves between phones</h2>
+      <p>This app keeps its data <b>on this device</b>, so nothing goes to an outside server. To combine data from several phones:</p>
+      <ol>
+        <li><b>Admin</b>: after adding drivers and vehicles, tap <i>Export / Share</i> and send the file to each driver (WhatsApp, email…).</li>
+        <li><b>Driver</b>: on the login screen tap <i>Import file</i> and choose that file, then log in.</li>
+        <li><b>Driver</b>: at the end of each day (or after an accident) tap <i>Export / Share</i> and send the file to the admin.</li>
+        <li><b>Admin</b>: tap <i>Import file</i> for each driver's file. Records are merged and nothing is duplicated.</li>
+      </ol></div>
+    <div class="card"><h2>Export</h2>
+      <p class="muted">Creates one file with all records and photos on this device.</p>
+      <div class="actions"><button class="primary" id="exp">⬆ Export / Share backup</button></div></div>
+    <div class="card"><h2>Import</h2>
+      <p class="muted">Merges a backup file from another phone into this one.</p>
+      <label class="btn">⬇ Import file<input type="file" id="imp" accept=".json,application/json" multiple hidden></label>
+      <p id="impres" class="muted"></p></div>
+    ${est ? `<p class="muted">Storage used on this device: ${fmt(est.usage / 1048576, 1)} MB of ${fmt(est.quota / 1048576, 0)} MB available.</p>` : ''}
+    ${isAdmin ? '' : '<p class="muted">Tip: export a backup regularly. If this phone is lost or the browser data is cleared, data that was not exported is lost.</p>'}`;
+  $('#exp', main).onclick = async (e) => {
+    e.target.disabled = true;
+    try { const how = await exportBackup(); if (how !== 'cancelled') toast(how === 'shared' ? 'Backup shared' : 'Backup downloaded'); }
+    catch (err) { toast(err.message, true); } finally { e.target.disabled = false; }
+  };
+  $('#imp', main).onchange = async (e) => {
+    const out = [];
+    for (const f of e.target.files) {
+      try { const s = await importBackup(f); out.push(`✔ ${esc(f.name)}: ${s.added} new, ${s.updated} updated, ${s.photos} photos`); }
+      catch (err) { out.push(`✖ ${esc(f.name)}: ${esc(err.message)}`); }
+    }
+    e.target.value = '';
+    state.vehicles = []; state.drivers = null;
+    $('#impres', main).innerHTML = out.join('<br>');
+    toast('Import finished');
+  };
+};
+
+// ------------------------------------------------------------------ login / first-run screen
+function renderLogin() {
+  const first = live('users').length === 0;
+  $('#app').innerHTML = `<div class="login card">
+    <img class="logo" src="${ICON}" alt=""><h1>Fleet Driver Monitor</h1>
+    ${first ? `<p>Welcome! <b>Fleet owner:</b> create your admin account below.<br><b>Driver:</b> tap <i>Import setup file</i> and choose the file your admin sent you.</p>
+      <form id="sf"><div class="fields" style="grid-template-columns:1fr">
+        <label><span>Your name</span><input name="name" required></label>
+        <label><span>Admin username</span><input name="username" required autocapitalize="off" value="admin"></label>
+        <label><span>Password (min 6)</span><input name="password" type="password" minlength="6" required autocomplete="new-password"></label>
+      </div><div class="actions"><button class="primary" type="submit" style="width:100%;justify-content:center">Create admin account</button></div></form>`
+    : `<p class="muted">Log in with the username and password given by your fleet admin.</p>
+      <form id="lf"><div class="fields" style="grid-template-columns:1fr">
+        <label><span>Username</span><input name="username" required autocapitalize="off" autocomplete="username"></label>
+        <label><span>Password</span><input name="password" type="password" required autocomplete="current-password"></label>
+      </div><div class="actions"><button class="primary" type="submit" style="width:100%;justify-content:center">Log in</button></div></form>`}
+    <hr style="border:0;border-top:1px solid var(--line);margin:18px 0">
+    <label class="btn" style="width:100%;justify-content:center">⬇ Import setup / backup file<input type="file" id="limp" accept=".json,application/json" hidden></label>
+    <p class="muted" style="font-size:.8rem;margin-bottom:0">Data is stored on this device only. Use Backup &amp; Sync to share it.</p></div>`;
+  const lf = $('#lf');
+  if (lf) lf.onsubmit = (e) => { e.preventDefault(); submitting(lf, async () => {
+    await api('/api/login', { method: 'POST', body: formData(lf) });
+    state.user = await api('/api/me'); location.hash = '#/dashboard'; render();
+  }); };
+  const sf = $('#sf');
+  if (sf) sf.onsubmit = (e) => { e.preventDefault(); submitting(sf, async () => {
+    const b = formData(sf);
+    if (!/^[a-z0-9._-]{3,50}$/i.test(b.username)) throw new Error('Username: 3+ letters/numbers, no spaces');
+    if (b.password.length < 6) throw new Error('Password must be at least 6 characters');
+    const { hash, salt } = await hashPassword(b.password);
+    const u = await insert('users', { username: b.username.trim(), name: b.name.trim(), phone: null, license_no: null, role: 'admin', pass_hash: hash, salt, active: 1 });
+    try { localStorage.setItem(SESSION_KEY, u.id); } catch {}
+    state.user = publicUser(u); location.hash = '#/vehicles'; render();
+    toast('Admin created. Add your vehicles and drivers next.');
+  }); };
+  $('#limp').onchange = async (e) => {
+    try { const s = await importBackup(e.target.files[0]); toast(`Imported: ${s.added} records`); renderLogin(); }
+    catch (err) { toast(err.message, true); }
+  };
+}
+
+async function boot() {
+  try { await loadDB(); }
+  catch { $('#app').innerHTML = '<div class="center"><p>This browser blocks storage (private mode?). Open the page in normal Chrome/Safari.</p></div>'; return; }
+  render();
+}
+
+document.getElementById('favicon').href = ICON;
+boot();
+</script>
+</body>
+</html>
