@@ -8,7 +8,7 @@ A driver login website for keeping track of every vehicle, every day. Drivers ca
 |---|---|---|
 | **Login** with username and password | ✔ | ✔ (creates driver logins) |
 | **Daily kilometers**: start the day with the odometer reading and a photo, end the day with the reading and a photo. Distance is calculated for you | ✔ | sees all drivers |
-| **Fuel & charging** for **CNG (kg), Petrol (L), Diesel (L) and EV (kWh)**: date, odometer, quantity, rate, total, station or charger, and a bill photo. EVs also record battery % before and after charging | ✔ | sees all, plus mileage per vehicle (km/kg, km/L, km/kWh) |
+| **Fuel & charging** for **CNG (kg), Petrol (L), Diesel (L) and EV (kWh)**: date, odometer, quantity, rate, total, station or charger, and a bill photo. **EVs can be logged with just the odometer reading** (home/office charging). kWh, cost and battery % are optional, and km driven is worked out from the readings | ✔ | sees all, plus mileage per vehicle (km/kg, km/L, km/kWh) |
 | **Oil change and service**: oil change, general service, tyre, brake, battery, CNG kit; cost, garage, next-due km, and a bill photo | ✔ | sees all |
 | **Oil change alerts**: shows a warning when a change is due within 500 km or is overdue (not shown for EVs) | ✔ | ✔ |
 | **Accident report**: date and time, odometer, GPS location, severity, injuries, other party, FIR no., and **up to 8 photos** (at least one is required) | ✔ | updates status (Reported → In review → Insurance claimed → Closed) and adds notes |

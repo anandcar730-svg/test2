@@ -111,6 +111,22 @@ const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJA
   assert.equal(d2.vehicles.find((x) => x.reg_no === 'DL01AB1234').mileage, 26, 'dual-fuel mileage uses CNG only');
   assert.match((await admin('/api/export/fuel.csv')).data, /fuel_type/);
 
+  // EV usage with the odometer only (home/office charging, no kWh or bill)
+  const evOnly = await driver('/api/fuel', 'POST', { vehicle_id: ev.data.id, date, odometer: 400 });
+  assert.equal(evOnly.status, 200, JSON.stringify(evOnly.data));
+  assert.equal((await driver('/api/fuel', 'POST', { vehicle_id: ev.data.id, date, odometer: 390 })).status, 400, 'reading cannot go backwards');
+  assert.equal((await driver('/api/fuel', 'POST', { vehicle_id: ev.data.id, date, odometer: 50 })).status, 400, 'not below starting odometer');
+  assert.equal((await driver('/api/fuel', 'POST', { vehicle_id: pv.data.id, date, odometer: 900 })).status, 400, 'petrol still needs litres');
+  const evRow = (await admin('/api/fuel?fuel_type=EV')).data.find((r) => r.id === evOnly.data.id);
+  assert.deepEqual([evRow.quantity, evRow.amount, evRow.price_per_unit, evRow.odometer], [0, 0, null, 400]);
+  const evSum = (await admin(`/api/vehicles/${ev.data.id}/summary`)).data;
+  assert.equal(evSum.month_odometer_km, 300, 'km from odometer: 400 - starting 100');
+  assert.equal(evSum.month_km, 0, 'no trips logged');
+  assert.equal(evSum.vehicle.mileage, 7.5, 'odometer-only readings do not distort km/kWh');
+  const d3 = (await admin('/api/dashboard')).data;
+  assert.equal(d3.vehicles.find((x) => x.reg_no === 'KA01E1').month_odometer_km, 300);
+  assert.ok(d3.month.fleet_km >= 300);
+
   // Driver sees only own data
   const other = await admin('/api/drivers', 'POST', { name: 'Other', username: 'other', password: 'other123' });
   const oc = client();

@@ -15,16 +15,19 @@ const FUEL = {
   CNG:    { unit: 'kg',  icon: '🟢', station: 'CNG station',      placeholder: 'e.g. IGL Sector 18',    noun: 'CNG fill' },
   Petrol: { unit: 'L',   icon: '⛽', station: 'Petrol pump',      placeholder: 'e.g. Indian Oil, MG Road', noun: 'petrol fill' },
   Diesel: { unit: 'L',   icon: '🛢', station: 'Diesel pump',      placeholder: 'e.g. HP, Ring Road',      noun: 'diesel fill' },
-  EV:     { unit: 'kWh', icon: '⚡', station: 'Charging station', placeholder: 'e.g. Tata Power, home',   noun: 'EV charge' },
+  EV:     { unit: 'kWh', icon: '⚡', station: 'Charging station', placeholder: 'e.g. Tata Power, home',   noun: 'EV reading' },
 };
 const VEHICLE_FUELS = ['CNG', 'CNG + Petrol', 'Petrol', 'Diesel', 'EV', 'Petrol + EV (hybrid)'];
 const primaryFuel = (vf) => (vf === 'EV' ? 'EV' : Object.keys(FUEL).find((k) => String(vf || '').startsWith(k)) || 'CNG');
+/** km this month: trips, or odometer readings when they show more (EVs logged by odometer only) */
+const monthKmCell = (v) => (v.month_odometer_km > v.month_km
+  ? `${fmt(v.month_odometer_km, 1)}<br><small class="muted">from odometer</small>` : fmt(v.month_km, 1));
 /** Link to a vehicle's own page */
 const vlink = (id, reg) => `<a class="vlink" href="#/vehicle/${encodeURIComponent(id)}">${esc(reg)}</a>`;
 const sourceBadge = (r) => (r.source === 'loyverse' ? '<span class="badge src-pos" title="Imported from Loyverse POS">🧾 Loyverse</span>' : '');
 const fuelBadge = (t) => `<span class="badge fuel-${esc(t)}">${FUEL[t]?.icon || ''} ${esc(t)}</span>`;
 /** "13 kg CNG · 20 L Petrol" from [{fuel_type, quantity, unit}] */
-const fuelList = (rows) => (rows || []).map((r) => `${fmt(r.quantity, 2)} ${esc(r.unit)} ${esc(r.fuel_type)}`).join('<br>') || '—';
+const fuelList = (rows) => (rows || []).filter((r) => r.quantity > 0).map((r) => `${fmt(r.quantity, 2)} ${esc(r.unit)} ${esc(r.fuel_type)}`).join('<br>') || '—';
 const STATUS_LABEL = { reported: 'Reported', in_review: 'In review', insurance_claimed: 'Insurance claimed', closed: 'Closed' };
 
 const state = { user: null, vehicles: [] };
@@ -131,7 +134,8 @@ async function submitting(form, fn) {
   try { await fn(); } catch (e) { toast(e.message, true); } finally { btn.disabled = false; }
 }
 function vehicleSelect(name = 'vehicle_id', { includeAll = false } = {}) {
-  const mine = state.vehicles.find((v) => v.assigned_driver_id === state.user.id);
+  const activeVehicles = state.vehicles.filter((v) => v.active);
+  const mine = state.vehicles.find((v) => v.assigned_driver_id === state.user.id) || (activeVehicles.length === 1 ? activeVehicles[0] : null);
   return `<select name="${name}" ${includeAll ? '' : 'required'}>
     ${includeAll ? '<option value="">All vehicles</option>' : '<option value="">Select vehicle</option>'}
     ${state.vehicles.filter((v) => includeAll || v.active).map((v) =>
@@ -204,8 +208,8 @@ pages.dashboard = async (main) => {
     ${d.open_accidents ? `<div class="alert danger">⚠️ ${d.open_accidents} accident report(s) not closed. <a href="#/accidents">View</a></div>` : ''}
     <div class="grid">
       <div class="stat"><div class="v">${fmt(d.today.km, 1)}</div><div class="l">km today</div></div>
-      <div class="stat"><div class="v">${fmt(d.month.km, 1)}</div><div class="l">km this month</div></div>
-      ${d.month.fuel.map((x) => `<div class="stat"><div class="v">${fmt(x.quantity, 2)} ${esc(x.unit)}</div>
+      <div class="stat"><div class="v">${fmt(isAdmin ? d.month.fleet_km : d.month.km, 1)}</div><div class="l">km this month</div></div>
+      ${d.month.fuel.filter((x) => x.quantity > 0).map((x) => `<div class="stat"><div class="v">${fmt(x.quantity, 2)} ${esc(x.unit)}</div>
         <div class="l">${FUEL[x.fuel_type]?.icon || ''} ${esc(x.fuel_type)} this month · ${money(x.amount)}</div></div>`).join('')}
       <div class="stat"><div class="v">${money(d.month.fuel_amount)}</div><div class="l">Fuel &amp; charging spend this month</div></div>
       <div class="stat"><div class="v">${d.month.cost_per_km !== null ? money(d.month.cost_per_km) : '—'}</div><div class="l">Fuel cost / km</div></div>
@@ -224,7 +228,7 @@ pages.dashboard = async (main) => {
     <div class="card"><h2>Vehicles</h2><div class="table-wrap"><table>
       <tr><th>Vehicle</th><th>Driver</th><th>Odometer</th><th>Month km</th><th>Month fuel</th><th>Mileage</th><th>Oil change</th></tr>
       ${d.vehicles.map((v) => `<tr><td><b>${vlink(v.id, v.reg_no)}</b><br><small class="muted">${esc(v.model)}</small><br>${fuelBadge(primaryFuel(v.fuel_type))}</td>
-        <td>${esc(v.driver_name || '—')}</td><td>${fmt(v.current_km)} km</td><td>${fmt(v.month_km, 1)}</td>
+        <td>${esc(v.driver_name || '—')}</td><td>${fmt(v.current_km)} km</td><td>${monthKmCell(v)}</td>
         <td>${fuelList(v.month_fuel)}<br><small class="muted">${money(v.month_fuel_amount)}</small></td>
         <td>${v.mileage ? fmt(v.mileage, 2) + ' ' + esc(v.mileage_unit) : '—'}</td>
         <td>${oilBadge(v)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No vehicles yet.</td></tr>'}
@@ -302,6 +306,8 @@ pages.fuel = async (main) => {
       </div></div>
       <label><span>Date *</span><input type="date" name="date" value="${today()}" required></label>
       ${kmField('odometer', 'Odometer (km)')}
+      <div class="full alert" id="evhelp" style="display:none;margin:0">⚡ <b>EV:</b> just enter the <b>odometer</b> – that is enough to track km driven.
+        Fill in kWh and cost only if you charged at a paid charger (needed for km/kWh and cost).</div>
       <label><span data-l="qty">Quantity *</span><input name="quantity" type="number" inputmode="decimal" step="0.01" min="0.01" required></label>
       <label><span data-l="price">Price per unit (₹)</span><input name="price_per_unit" type="number" inputmode="decimal" step="0.01" min="0"></label>
       <label><span>Total amount (₹)</span><input name="amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="auto = qty × price"></label>
@@ -321,7 +327,10 @@ pages.fuel = async (main) => {
   // Update labels/units for the chosen fuel
   const applyFuel = () => {
     const t = f.fuel_type.value || 'CNG', F = FUEL[t];
-    $('[data-l=qty]', f).textContent = `${t === 'EV' ? 'Energy charged' : 'Quantity'} (${F.unit}) *`;
+    const ev = t === 'EV';
+    $('[data-l=qty]', f).textContent = ev ? 'Energy charged (kWh) – optional' : `Quantity (${F.unit}) *`;
+    qty.required = !ev;
+    $('#evhelp', main).style.display = ev ? '' : 'none';
     $('[data-l=price]', f).textContent = `Price per ${F.unit} (₹)`;
     $('[data-l=station]', f).textContent = F.station;
     f.station.placeholder = F.placeholder;
@@ -350,16 +359,17 @@ pages.fuel = async (main) => {
     for (const r of rows) {
       totals[r.fuel_type] ??= { fuel_type: r.fuel_type, unit: r.unit, quantity: 0 };
       totals[r.fuel_type].quantity += r.quantity;
+      totals[r.fuel_type].readings = (totals[r.fuel_type].readings || 0) + 1;
     }
     const amount = rows.reduce((s, r) => s + r.amount, 0);
-    $('#list', main).innerHTML = `<p class="muted">${rows.length} records · ${Object.values(totals).map((t) => `<b>${fmt(t.quantity, 2)} ${esc(t.unit)}</b> ${esc(t.fuel_type)}`).join(' · ') || '—'} · <b>${money(amount)}</b></p>
+    $('#list', main).innerHTML = `<p class="muted">${rows.length} records · ${Object.values(totals).map((t) => (t.quantity > 0 ? `<b>${fmt(t.quantity, 2)} ${esc(t.unit)}</b> ${esc(t.fuel_type)}` : `<b>${t.readings}</b> EV reading(s)`)).join(' · ') || '—'} · <b>${money(amount)}</b></p>
       <div class="table-wrap"><table>
       <tr><th>Date</th><th>Vehicle</th><th>Fuel</th>${state.user.role === 'admin' ? '<th>Driver</th>' : ''}<th>Odometer</th><th>Qty</th><th>Rate</th><th>Amount</th><th>Station</th><th>Photo</th><th></th></tr>
       ${rows.map((r) => `<tr><td>${esc(r.date)}</td><td>${vlink(r.vehicle_id, r.reg_no)}</td><td>${fuelBadge(r.fuel_type)}<br>${sourceBadge(r)}</td>
         ${state.user.role === 'admin' ? `<td>${esc(r.driver_name)}</td>` : ''}
-        <td>${odoCell(r)}</td><td>${fmt(r.quantity, 2)} ${esc(r.unit)}${r.fuel_type === 'EV' && r.battery_end_pct !== null
+        <td>${odoCell(r)}</td><td>${r.quantity > 0 ? `${fmt(r.quantity, 2)} ${esc(r.unit)}` : '<small class="muted">📍 odometer only</small>'}${r.fuel_type === 'EV' && r.battery_end_pct !== null
           ? `<br><small class="muted">🔋 ${r.battery_start_pct ?? '?'}% → ${r.battery_end_pct}%</small>` : ''}</td>
-        <td>₹${fmt(r.price_per_unit, 2)}/${esc(r.unit)}</td><td><b>${money(r.amount)}</b></td>
+        <td>${r.price_per_unit ? `₹${fmt(r.price_per_unit, 2)}/${esc(r.unit)}` : '—'}</td><td><b>${r.amount ? money(r.amount) : '—'}</b></td>
         <td>${esc(r.station)}</td><td>${thumb(r.photo)}</td><td>${delBtn('fuel', r.id)}</td></tr>`).join('')}
       </table></div>`;
     bindDeletes($('#list', main), () => load(qs));
@@ -396,8 +406,10 @@ pages.vehicle = async (main, id) => {
     ${missingOdo ? `<div class="alert warn">${missingOdo} fuel record(s) have no odometer reading – tap <b>➕ Add km</b> below for accurate mileage.</div>` : ''}
     <div class="grid">
       <div class="stat"><div class="v">${fmt(v.current_km)}</div><div class="l">Odometer (km)</div></div>
-      <div class="stat"><div class="v">${v.mileage ? fmt(v.mileage, 2) : '—'}</div><div class="l">Mileage (${esc(v.mileage_unit)})</div></div>
-      <div class="stat"><div class="v">${fmt(d.month_km, 1)}</div><div class="l">km this month</div></div>
+      <div class="stat"><div class="v">${v.mileage ? fmt(v.mileage, 2) : '—'}</div><div class="l">Mileage (${esc(v.mileage_unit)})${
+        v.main_fuel === 'EV' && !v.mileage ? '<br><small>add kWh when charging to see this</small>' : ''}</div></div>
+      <div class="stat"><div class="v">${fmt(Math.max(d.month_km, d.month_odometer_km), 1)}</div><div class="l">km this month${
+        d.month_odometer_km > d.month_km ? ' (from odometer)' : ''}</div></div>
       <div class="stat"><div class="v">${money(d.month_fuel_amount)}</div><div class="l">Fuel this month<br>${fuelList(d.month_fuel)}</div></div>
       <div class="stat"><div class="v">${money(d.month_service_cost)}</div><div class="l">Service this month</div></div>
       <div class="stat"><div class="v" style="font-size:1rem">${oilBadge(v)}</div><div class="l">Oil change</div></div>
@@ -406,7 +418,7 @@ pages.vehicle = async (main, id) => {
     <div class="card"><h2>Fuel &amp; charging <small class="muted">(last 30)</small></h2><div class="table-wrap" id="vfuel"><table>
       <tr><th>Date</th><th>Fuel</th><th>Odometer</th><th>Qty</th><th>Amount</th><th>Station</th><th>By</th><th>Bill</th></tr>
       ${d.fuel.map((r) => `<tr><td>${esc(r.date)}</td><td>${fuelBadge(r.fuel_type)} ${sourceBadge(r)}</td><td>${odoCell(r)}</td>
-        <td>${fmt(r.quantity, 2)} ${esc(r.unit)}</td><td><b>${money(r.amount)}</b></td><td>${esc(r.station)}</td><td>${esc(r.driver_name)}</td><td>${thumb(r.photo)}</td></tr>`).join('')
+        <td>${r.quantity > 0 ? `${fmt(r.quantity, 2)} ${esc(r.unit)}` : '<small class="muted">📍 reading</small>'}</td><td><b>${r.amount ? money(r.amount) : '—'}</b></td><td>${esc(r.station)}</td><td>${esc(r.driver_name)}</td><td>${thumb(r.photo)}</td></tr>`).join('')
         || '<tr><td colspan="8" class="muted">No fuel records yet.</td></tr>'}
     </table></div></div>
     <div class="card"><h2>Daily km <small class="muted">(last 30)</small></h2><div class="table-wrap"><table>

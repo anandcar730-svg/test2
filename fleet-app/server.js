@@ -184,7 +184,8 @@ const usesOil = (vehicleFuel) => String(vehicleFuel || '') !== 'EV';
  * odometer reading, divided by the fuel added after the first of them (fills without a reading still count).
  */
 function mileage(vehicleId, fuel) {
-  const rows = all(`SELECT odometer, qty_kg FROM fuel_logs WHERE vehicle_id=? AND fuel_type=?
+  // Only real fills/charges (quantity > 0); EV odometer-only readings carry no energy figure.
+  const rows = all(`SELECT odometer, qty_kg FROM fuel_logs WHERE vehicle_id=? AND fuel_type=? AND qty_kg > 0
                     ORDER BY date, odometer IS NULL, odometer, id`, vehicleId, fuel);
   const first = rows.findIndex((r) => r.odometer !== null);
   let last = -1;
@@ -193,6 +194,25 @@ function mileage(vehicleId, fuel) {
   const used = rows.slice(first + 1, last + 1).reduce((t, r) => t + r.qty_kg, 0);
   const dist = rows[last].odometer - rows[first].odometer;
   return used > 0 && dist > 0 ? +(dist / used).toFixed(2) : null;
+}
+/**
+ * km driven in a month from odometer readings of every kind (trips, fuel/EV readings, services, accidents):
+ * highest reading in the month minus the highest reading before it (or the vehicle's starting odometer).
+ * Works for vehicles whose drivers only log odometer readings (e.g. EVs charged at home/office).
+ */
+function odometerKm(vehicleId, month) {
+  const maxWhere = (cond) => get(`SELECT MAX(km) AS km FROM (
+      SELECT MAX(start_km) AS km FROM trips WHERE vehicle_id=:v AND ${cond('date')}
+      UNION ALL SELECT MAX(end_km) FROM trips WHERE vehicle_id=:v AND ${cond('date')}
+      UNION ALL SELECT MAX(odometer) FROM fuel_logs WHERE vehicle_id=:v AND ${cond('date')}
+      UNION ALL SELECT MAX(odometer) FROM services WHERE vehicle_id=:v AND ${cond('date')}
+      UNION ALL SELECT MAX(odometer) FROM accidents WHERE vehicle_id=:v AND ${cond('occurred_at')})`,
+    { v: vehicleId, m: month }).km;
+  const inMonth = maxWhere((c) => `substr(${c},1,7)=:m`);
+  if (inMonth === null || inMonth === undefined) return 0;
+  const before = maxWhere((c) => `substr(${c},1,7)<:m`);
+  const start = get(`SELECT initial_km FROM vehicles WHERE id=?`, vehicleId)?.initial_km ?? 0;
+  return Math.max(0, inMonth - Math.max(start, before ?? 0));
 }
 const fuelRow = (r) => {
   const { qty_kg, price_per_kg, ...rest } = r;
@@ -547,22 +567,34 @@ route('POST', '/api/fuel', ({ user, body }) => {
   const v = getVehicle(body.vehicle_id, user);
   const type = body.fuel_type ? (FUELS[body.fuel_type] ? body.fuel_type : bad('Choose CNG, Petrol, Diesel or EV')) : primaryFuel(v.fuel_type);
   const unit = FUELS[type].unit;
-  const qty = num(body.quantity ?? body.qty_kg, `Quantity (${unit})`);
-  if (qty <= 0) bad('Quantity must be more than 0');
+  const isEV = type === 'EV';
+  const date = isoDate(body.date);
+  const odometer = num(body.odometer, 'Odometer');
+  // EVs: kWh and cost are optional – a reading with only the odometer records usage (home/office charging).
+  const qty = num(body.quantity ?? body.qty_kg, `Quantity (${unit})`, { required: !isEV }) ?? 0;
+  if (!isEV && qty <= 0) bad('Quantity must be more than 0');
   const price = num(body.price_per_unit ?? body.price_per_kg, `Price per ${unit}`, { required: false });
-  const amount = num(body.amount, 'Amount', { required: false }) ?? (price !== null ? +(price * qty).toFixed(2) : null);
+  const amount = num(body.amount, 'Amount', { required: false })
+    ?? (price !== null && qty > 0 ? +(price * qty).toFixed(2) : isEV ? 0 : null);
   if (amount === null) bad(`Enter the total amount or the price per ${unit}`);
+  if (isEV) {
+    if (odometer < v.initial_km) bad(`Odometer cannot be lower than the vehicle's starting reading (${v.initial_km} km)`);
+    const prev = get(`SELECT MAX(odometer) AS km FROM fuel_logs WHERE vehicle_id=? AND fuel_type='EV' AND date<=?`, v.id, date).km;
+    if (prev !== null && odometer < prev) bad(`Odometer is lower than the previous EV reading (${prev} km)`);
+    const next = get(`SELECT MIN(odometer) AS km FROM fuel_logs WHERE vehicle_id=? AND fuel_type='EV' AND date>?`, v.id, date).km;
+    if (next !== null && odometer > next) bad(`Odometer is higher than a later EV reading (${next} km) – check the date`);
+  }
   let b1 = null, b2 = null;
-  if (type === 'EV') {
+  if (isEV) {
     b1 = num(body.battery_start_pct, 'Battery % before', { required: false });
     b2 = num(body.battery_end_pct, 'Battery % after', { required: false });
     if ((b1 !== null && b1 > 100) || (b2 !== null && b2 > 100)) bad('Battery % must be between 0 and 100');
-    if (b1 !== null && b2 !== null && b2 < b1) bad('Battery % after charging must be higher than before');
+    if (b1 !== null && b2 !== null && b2 < b1 && qty > 0) bad('Battery % after charging must be higher than before');
   }
   const r = run(`INSERT INTO fuel_logs (driver_id,vehicle_id,date,odometer,fuel_type,qty_kg,price_per_kg,amount,station,battery_start_pct,battery_end_pct,photo,notes)
                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    user.id, v.id, isoDate(body.date), num(body.odometer, 'Odometer'), type, qty,
-    price ?? +(amount / qty).toFixed(2), amount, str(body.station, 'Station', { max: 200 }), b1, b2,
+    user.id, v.id, date, odometer, type, qty,
+    qty > 0 ? price ?? +(amount / qty).toFixed(2) : price, amount, str(body.station, 'Station', { max: 200 }), b1, b2,
     saveImage(body.photo), str(body.notes, 'Notes'));
   return { id: Number(r.lastInsertRowid) };
 });
@@ -616,7 +648,7 @@ route('GET', '/api/vehicles/:id/summary', ({ user, params, query }) => {
   const total = (sql) => get(sql, v.id).n;
   return {
     vehicle: { ...v, ...oilStatus(v), main_fuel: main, mileage: mileage(v.id, main), mileage_unit: `km/${FUELS[main].unit}` },
-    month, month_km: monthKm, month_fuel: fuelMonth,
+    month, month_km: monthKm, month_odometer_km: odometerKm(v.id, month), month_fuel: fuelMonth,
     month_fuel_amount: fuelMonth.reduce((t, r) => t + r.amount, 0),
     month_service_cost: get(`SELECT COALESCE(SUM(cost),0) AS c FROM services WHERE vehicle_id=? AND substr(date,1,7)=?`, v.id, month).c,
     totals: {
@@ -722,22 +754,27 @@ route('GET', '/api/dashboard', ({ user }) => {
     const main = primaryFuel(v.fuel_type);
     const eff = mileage(v.id, main);
     return { id: v.id, reg_no: v.reg_no, model: v.model, fuel_type: v.fuel_type, driver_name: v.driver_name, month_km: mk,
+      month_odometer_km: odometerKm(v.id, month), assigned_driver_id: v.assigned_driver_id,
       month_fuel: mf.by_type, month_fuel_amount: mf.amount, mileage: eff, mileage_unit: `km/${FUELS[main].unit}`, ...s };
   });
 
+  // Admin: km per vehicle = trips or odometer readings, whichever is higher (EVs often have readings only)
+  const kmForCost = mine ? monthKm : vehicles.reduce((t, v) => t + Math.max(v.month_km, v.month_odometer_km), 0);
   const daily = all(`SELECT date, SUM(end_km-start_km) AS km FROM trips WHERE end_km IS NOT NULL ${dw}
                      AND date >= :since GROUP BY date ORDER BY date`, { ...p, since: today(-13) });
 
   return {
     today: { km: kmSum(`date='${d}'`), fuel: fuelSum(`date='${d}'`),
       trips: get(`SELECT COUNT(*) AS n FROM trips WHERE date=:d ${dw}`, { ...p, d }).n },
-    month: { km: monthKm, fuel: monthFuel.by_type, fuel_amount: monthFuel.amount,
+    month: { km: monthKm, fleet_km: vehicles.reduce((t, v) => t + Math.max(v.month_km, v.month_odometer_km), 0),
+      fuel: monthFuel.by_type, fuel_amount: monthFuel.amount,
       service_cost: get(`SELECT COALESCE(SUM(cost),0) AS c FROM services WHERE substr(date,1,7)='${month}' ${dw}`, p).c,
       accidents: get(`SELECT COUNT(*) AS n FROM accidents WHERE substr(occurred_at,1,7)='${month}' ${dw}`, p).n,
-      cost_per_km: monthKm > 0 ? +(monthFuel.amount / monthKm).toFixed(2) : null },
+      cost_per_km: kmForCost > 0 ? +(monthFuel.amount / kmForCost).toFixed(2) : null },
     open_accidents: get(`SELECT COUNT(*) AS n FROM accidents WHERE status!='closed' ${dw}`, p).n,
     pos_unmatched: mine ? 0 : get(`SELECT COUNT(*) AS n FROM pos_unmatched WHERE status='pending'`).n,
-    vehicles: mine ? vehicles.filter((v) => ['overdue', 'due_soon'].includes(v.oil_status) || all(`SELECT 1 FROM trips WHERE vehicle_id=? AND driver_id=? LIMIT 1`, v.id, user.id).length) : vehicles,
+    vehicles: mine ? vehicles.filter((v) => v.assigned_driver_id === user.id || ['overdue', 'due_soon'].includes(v.oil_status)
+      || get(`SELECT 1 AS x FROM trips WHERE vehicle_id=:v AND driver_id=:me UNION SELECT 1 FROM fuel_logs WHERE vehicle_id=:v AND driver_id=:me LIMIT 1`, { v: v.id, me: user.id })) : vehicles,
     daily,
     active_trips: all(`SELECT t.id, t.start_km, t.date, t.started_at, u.name AS driver_name, v.reg_no FROM trips t
                        ${JOIN_NAMES('t')} WHERE t.end_km IS NULL ${mine ? 'AND t.driver_id=:me' : ''} ORDER BY t.id DESC`, p),
