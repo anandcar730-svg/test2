@@ -7,6 +7,6 @@
   "engines": { "node": ">=22.13" },
   "scripts": {
     "start": "node --no-warnings=ExperimentalWarning server.js",
-    "test": "node --no-warnings=ExperimentalWarning test/smoke.test.js"
+    "test": "node --no-warnings=ExperimentalWarning test/smoke.test.js && node --no-warnings=ExperimentalWarning test/loyverse.test.js"
   }
 }

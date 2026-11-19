@@ -19,6 +19,9 @@ const FUEL = {
 };
 const VEHICLE_FUELS = ['CNG', 'CNG + Petrol', 'Petrol', 'Diesel', 'EV', 'Petrol + EV (hybrid)'];
 const primaryFuel = (vf) => (vf === 'EV' ? 'EV' : Object.keys(FUEL).find((k) => String(vf || '').startsWith(k)) || 'CNG');
+/** Link to a vehicle's own page */
+const vlink = (id, reg) => `<a class="vlink" href="#/vehicle/${encodeURIComponent(id)}">${esc(reg)}</a>`;
+const sourceBadge = (r) => (r.source === 'loyverse' ? '<span class="badge src-pos" title="Imported from Loyverse POS">🧾 Loyverse</span>' : '');
 const fuelBadge = (t) => `<span class="badge fuel-${esc(t)}">${FUEL[t]?.icon || ''} ${esc(t)}</span>`;
 /** "13 kg CNG · 20 L Petrol" from [{fuel_type, quantity, unit}] */
 const fuelList = (rows) => (rows || []).map((r) => `${fmt(r.quantity, 2)} ${esc(r.unit)} ${esc(r.fuel_type)}`).join('<br>') || '—';
@@ -197,6 +200,7 @@ pages.dashboard = async (main) => {
     ${alerts.map((v) => `<div class="alert ${v.oil_status === 'overdue' ? 'danger' : 'warn'}">
       🛢 <b>${esc(v.reg_no)}</b>: oil change ${v.oil_status === 'overdue'
         ? `<b>overdue by ${fmt(-v.oil_remaining_km)} km</b>` : `due in ${fmt(v.oil_remaining_km)} km`} (at ${fmt(v.oil_due_km)} km)</div>`).join('')}
+    ${d.pos_unmatched ? `<div class="alert warn">🧾 ${d.pos_unmatched} Loyverse fuel sale(s) need a vehicle. <a href="#/loyverse">Assign</a></div>` : ''}
     ${d.open_accidents ? `<div class="alert danger">⚠️ ${d.open_accidents} accident report(s) not closed. <a href="#/accidents">View</a></div>` : ''}
     <div class="grid">
       <div class="stat"><div class="v">${fmt(d.today.km, 1)}</div><div class="l">km today</div></div>
@@ -219,7 +223,7 @@ pages.dashboard = async (main) => {
       </table></div></div>` : ''}
     <div class="card"><h2>Vehicles</h2><div class="table-wrap"><table>
       <tr><th>Vehicle</th><th>Driver</th><th>Odometer</th><th>Month km</th><th>Month fuel</th><th>Mileage</th><th>Oil change</th></tr>
-      ${d.vehicles.map((v) => `<tr><td><b>${esc(v.reg_no)}</b><br><small class="muted">${esc(v.model)}</small><br>${fuelBadge(primaryFuel(v.fuel_type))}</td>
+      ${d.vehicles.map((v) => `<tr><td><b>${vlink(v.id, v.reg_no)}</b><br><small class="muted">${esc(v.model)}</small><br>${fuelBadge(primaryFuel(v.fuel_type))}</td>
         <td>${esc(v.driver_name || '—')}</td><td>${fmt(v.current_km)} km</td><td>${fmt(v.month_km, 1)}</td>
         <td>${fuelList(v.month_fuel)}<br><small class="muted">${money(v.month_fuel_amount)}</small></td>
         <td>${v.mileage ? fmt(v.mileage, 2) + ' ' + esc(v.mileage_unit) : '—'}</td>
@@ -351,16 +355,144 @@ pages.fuel = async (main) => {
     $('#list', main).innerHTML = `<p class="muted">${rows.length} records · ${Object.values(totals).map((t) => `<b>${fmt(t.quantity, 2)} ${esc(t.unit)}</b> ${esc(t.fuel_type)}`).join(' · ') || '—'} · <b>${money(amount)}</b></p>
       <div class="table-wrap"><table>
       <tr><th>Date</th><th>Vehicle</th><th>Fuel</th>${state.user.role === 'admin' ? '<th>Driver</th>' : ''}<th>Odometer</th><th>Qty</th><th>Rate</th><th>Amount</th><th>Station</th><th>Photo</th><th></th></tr>
-      ${rows.map((r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.reg_no)}</td><td>${fuelBadge(r.fuel_type)}</td>
+      ${rows.map((r) => `<tr><td>${esc(r.date)}</td><td>${vlink(r.vehicle_id, r.reg_no)}</td><td>${fuelBadge(r.fuel_type)}<br>${sourceBadge(r)}</td>
         ${state.user.role === 'admin' ? `<td>${esc(r.driver_name)}</td>` : ''}
-        <td>${fmt(r.odometer)}</td><td>${fmt(r.quantity, 2)} ${esc(r.unit)}${r.fuel_type === 'EV' && r.battery_end_pct !== null
+        <td>${odoCell(r)}</td><td>${fmt(r.quantity, 2)} ${esc(r.unit)}${r.fuel_type === 'EV' && r.battery_end_pct !== null
           ? `<br><small class="muted">🔋 ${r.battery_start_pct ?? '?'}% → ${r.battery_end_pct}%</small>` : ''}</td>
         <td>₹${fmt(r.price_per_unit, 2)}/${esc(r.unit)}</td><td><b>${money(r.amount)}</b></td>
         <td>${esc(r.station)}</td><td>${thumb(r.photo)}</td><td>${delBtn('fuel', r.id)}</td></tr>`).join('')}
       </table></div>`;
     bindDeletes($('#list', main), () => load(qs));
+    bindOdoButtons($('#list', main), () => load(qs));
   };
   bindFilters($('#flt', main), 'fuel', load);
+};
+
+// Fills without an odometer reading (Loyverse imports) get an "Add km" button
+const odoCell = (r) => (r.odometer === null || r.odometer === undefined
+  ? `<button class="small" data-odo="${r.id}" title="Add the odometer reading for this fill">➕ Add km</button>` : fmt(r.odometer));
+function bindOdoButtons(root, reload) {
+  for (const b of $$('[data-odo]', root)) b.onclick = async () => {
+    const km = prompt('Odometer reading (km) at this fill:');
+    if (km === null || km.trim() === '') return;
+    try { await api(`/api/fuel/${b.dataset.odo}/odometer`, { method: 'PUT', body: { odometer: km.trim() } }); toast('Odometer saved'); reload(); }
+    catch (e) { toast(e.message, true); }
+  };
+}
+
+// --- one vehicle: everything in one place
+pages.vehicle = async (main, id) => {
+  const d = await api(`/api/vehicles/${encodeURIComponent(id)}/summary`);
+  const v = d.vehicle, admin = state.user.role === 'admin';
+  const missingOdo = d.fuel.filter((f) => f.odometer === null).length;
+  main.innerHTML = `
+    <div class="row"><a class="btn small" href="#/${admin ? 'vehicles' : 'dashboard'}">← Back</a></div>
+    <h1 style="margin-top:12px">${esc(v.reg_no)} ${fuelBadge(v.main_fuel)} ${v.active ? '' : '<span class="badge">inactive</span>'}</h1>
+    <p class="muted">${esc(v.model || '')}${v.model ? ' · ' : ''}${esc(v.fuel_type)} · Driver: <b>${esc(v.driver_name || '—')}</b>
+      ${v.driver_phone ? ` · <a href="tel:${esc(v.driver_phone)}">📞 ${esc(v.driver_phone)}</a>` : ''}
+      ${v.loyverse_customer_id ? ' · 🧾 linked to Loyverse' : ''}</p>
+    ${['overdue', 'due_soon'].includes(v.oil_status) ? `<div class="alert ${v.oil_status === 'overdue' ? 'danger' : 'warn'}">🛢 Oil change ${
+      v.oil_status === 'overdue' ? `<b>overdue by ${fmt(-v.oil_remaining_km)} km</b>` : `due in ${fmt(v.oil_remaining_km)} km`}</div>` : ''}
+    ${missingOdo ? `<div class="alert warn">${missingOdo} fuel record(s) have no odometer reading – tap <b>➕ Add km</b> below for accurate mileage.</div>` : ''}
+    <div class="grid">
+      <div class="stat"><div class="v">${fmt(v.current_km)}</div><div class="l">Odometer (km)</div></div>
+      <div class="stat"><div class="v">${v.mileage ? fmt(v.mileage, 2) : '—'}</div><div class="l">Mileage (${esc(v.mileage_unit)})</div></div>
+      <div class="stat"><div class="v">${fmt(d.month_km, 1)}</div><div class="l">km this month</div></div>
+      <div class="stat"><div class="v">${money(d.month_fuel_amount)}</div><div class="l">Fuel this month<br>${fuelList(d.month_fuel)}</div></div>
+      <div class="stat"><div class="v">${money(d.month_service_cost)}</div><div class="l">Service this month</div></div>
+      <div class="stat"><div class="v" style="font-size:1rem">${oilBadge(v)}</div><div class="l">Oil change</div></div>
+    </div>
+    <div class="card"><h2>All time</h2><p>${fmt(d.totals.km, 1)} km driven · ${money(d.totals.fuel_amount)} fuel · ${money(d.totals.service_cost)} service · ${d.totals.accidents} accident(s)</p></div>
+    <div class="card"><h2>Fuel &amp; charging <small class="muted">(last 30)</small></h2><div class="table-wrap" id="vfuel"><table>
+      <tr><th>Date</th><th>Fuel</th><th>Odometer</th><th>Qty</th><th>Amount</th><th>Station</th><th>By</th><th>Bill</th></tr>
+      ${d.fuel.map((r) => `<tr><td>${esc(r.date)}</td><td>${fuelBadge(r.fuel_type)} ${sourceBadge(r)}</td><td>${odoCell(r)}</td>
+        <td>${fmt(r.quantity, 2)} ${esc(r.unit)}</td><td><b>${money(r.amount)}</b></td><td>${esc(r.station)}</td><td>${esc(r.driver_name)}</td><td>${thumb(r.photo)}</td></tr>`).join('')
+        || '<tr><td colspan="8" class="muted">No fuel records yet.</td></tr>'}
+    </table></div></div>
+    <div class="card"><h2>Daily km <small class="muted">(last 30)</small></h2><div class="table-wrap"><table>
+      <tr><th>Date</th><th>Driver</th><th>Start</th><th>End</th><th>Distance</th><th>Photos</th></tr>
+      ${d.trips.map((r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.driver_name)}</td><td>${fmt(r.start_km)}</td>
+        <td>${r.end_km === null ? '<span class="badge warn">open</span>' : fmt(r.end_km)}</td>
+        <td><b>${r.distance_km === null ? '—' : fmt(r.distance_km, 1) + ' km'}</b></td><td>${thumb(r.start_photo)} ${thumb(r.end_photo)}</td></tr>`).join('')
+        || '<tr><td colspan="6" class="muted">No trips yet.</td></tr>'}
+    </table></div></div>
+    <div class="card"><h2>Service &amp; oil change</h2><div class="table-wrap"><table>
+      <tr><th>Date</th><th>Type</th><th>Odometer</th><th>Next due</th><th>Cost</th><th>Garage</th><th>Details</th><th>Bill</th></tr>
+      ${d.services.map((r) => `<tr><td>${esc(r.date)}</td><td>${SERVICE_LABEL[r.type] || esc(r.type)}</td><td>${fmt(r.odometer)}</td>
+        <td>${fmt(r.next_due_km)}</td><td>${money(r.cost)}</td><td>${esc(r.garage)}</td><td class="wrap">${esc(r.notes)}</td><td>${thumb(r.photo)}</td></tr>`).join('')
+        || '<tr><td colspan="8" class="muted">No service records yet.</td></tr>'}
+    </table></div></div>
+    <div class="card"><h2>Accidents</h2>${d.accidents.length ? accidentTable(d.accidents) : '<p class="muted">No accidents. 👍</p>'}</div>`;
+  bindOdoButtons(main, () => route());
+};
+
+// --- Loyverse POS (admin)
+pages.loyverse = async (main) => {
+  const st = await api('/api/loyverse');
+  const pending = st.connected ? await api('/api/loyverse/unmatched') : [];
+  const ago = (iso) => (iso ? new Date(iso).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : 'never');
+  const r = st.last_result;
+  main.innerHTML = `<h1>🧾 Loyverse POS</h1>
+    <p class="muted">Petrol, diesel and CNG sold in Loyverse are added to the website automatically (every ${st.interval_minutes} minutes).</p>
+    <div class="card"><h2>1. Connect</h2>
+      ${st.connected ? `<p>✅ Connected (token ${esc(st.token_hint)}) · Auto-sync <b>${st.enabled ? 'on' : 'off'}</b></p>` : `
+      <ol class="muted"><li>Open <b>Loyverse Back Office</b> (r.loyverse.com) on a computer.</li>
+        <li>Go to <b>Settings → Access tokens → + Add access token</b>, name it "Fleet", Save.</li>
+        <li>Copy the token and paste it here.</li></ol>`}
+      <form id="cf"><div class="fields">
+        <label><span>${st.connected ? 'Replace access token' : 'Access token'}</span><input name="token" autocomplete="off" placeholder="paste token here"></label>
+        <label><span>Import sales from (first sync)</span><input type="date" name="since" value="${esc((st.since || '').slice(0, 10))}"></label>
+        <label class="check"><input type="checkbox" name="enabled" ${st.enabled ? 'checked' : ''}> Auto-sync every ${st.interval_minutes} min</label>
+      </div><div class="actions"><button class="primary" type="submit">${st.connected ? 'Save' : 'Connect'}</button>
+        ${st.connected ? '<button type="button" id="disc" class="danger">Disconnect</button>' : ''}</div></form></div>
+    ${st.connected ? `
+    <div class="card"><h2>2. Sync</h2>
+      <p>Last sync: <b>${ago(st.last_sync)}</b>${r ? ` – ${r.receipts} receipts read, <b>${r.imported}</b> fuel sales added, ${r.unmatched} without vehicle, ${r.removed} removed (refund/cancel)` : ''}</p>
+      ${st.last_error ? `<div class="alert danger">Last error (${ago(st.last_error.at)}): ${esc(st.last_error.message)}</div>` : ''}
+      <div class="actions"><button class="primary" id="sync">🔄 Sync now</button></div></div>
+    <div class="card"><h2>3. Vehicle numbers in Loyverse</h2>
+      <p>The cashier must tell Loyverse which vehicle is being filled. Either:</p>
+      <ul><li><b>Best:</b> add every vehicle to Loyverse as a <b>customer</b> named by its number, then the cashier just selects the customer.
+        <br><button id="push" class="primary" style="margin-top:8px">➕ Add / update ${st.linked_vehicles ? '' : 'all '}vehicles in Loyverse</button>
+        <small class="muted">${st.linked_vehicles} vehicle(s) linked</small></li>
+        <li style="margin-top:10px"><b>Or:</b> type the vehicle number in the <b>receipt comment</b> (e.g. "TN01AB1234" or just the last 4 digits "1234").</li></ul>
+      <p class="muted">Fuel items are recognised by name: <b>Petrol</b> / Power / Speed / XP95 → Petrol, <b>Diesel</b> / HSD → Diesel, <b>CNG</b> → CNG.
+        Odometer readings are not in Loyverse – drivers can add them with <b>➕ Add km</b> on the Fuel page.</p></div>
+    <div class="card"><h2>Sales without a vehicle (${pending.length})</h2>
+      ${pending.length ? `<div class="table-wrap"><table>
+        <tr><th>Date</th><th>Receipt</th><th>Item</th><th>Qty</th><th>Amount</th><th>Info</th><th>Vehicle</th><th></th></tr>
+        ${pending.map((u) => `<tr><td>${esc(u.receipt_date)}</td><td>${esc(u.receipt_number)}</td><td>${fuelBadge(u.fuel_type)}<br><small>${esc(u.item_name)}</small></td>
+          <td>${fmt(u.quantity, 2)}</td><td>${money(u.amount)}</td><td class="wrap">${esc(u.info || '—')}</td>
+          <td><select data-um="${u.id}"><option value="">Choose…</option>${state.vehicles.filter((v) => v.active)
+            .map((v) => `<option value="${v.id}">${esc(v.reg_no)}</option>`).join('')}</select></td>
+          <td class="row"><button class="small primary" data-assign="${u.id}">Assign</button><button class="small" data-ignore="${u.id}" title="Not a fleet vehicle">Ignore</button></td></tr>`).join('')}
+      </table></div>` : '<p class="muted">Nothing to assign. 👍</p>'}</div>` : ''}`;
+
+  const cf = $('#cf', main);
+  cf.onsubmit = (e) => { e.preventDefault(); submitting(cf, async () => {
+    const body = { enabled: cf.enabled.checked };
+    if (cf.token.value.trim()) body.token = cf.token.value.trim();
+    if (cf.since.value !== (st.since || '').slice(0, 10)) body.since = cf.since.value || null;
+    if (!st.connected && !body.token) throw new Error('Paste the access token first');
+    await api('/api/loyverse', { method: 'PUT', body });
+    toast(body.token ? 'Connected to Loyverse' : 'Saved');
+    if (body.token || body.since) { toast('Connected – reading sales…'); await api('/api/loyverse/sync', { method: 'POST' }).catch((err) => toast(err.message, true)); }
+    route();
+  }); };
+  const btn = (sel, fn) => { const b = $(sel, main); if (b) b.onclick = async () => { b.disabled = true; try { await fn(); } catch (err) { toast(err.message, true); } finally { b.disabled = false; } }; };
+  btn('#disc', async () => { if (!confirm('Disconnect Loyverse? Already imported sales stay.')) return; await api('/api/loyverse', { method: 'PUT', body: { token: '' } }); route(); });
+  btn('#sync', async () => { const s = await api('/api/loyverse/sync', { method: 'POST' }); toast(`${s.imported} fuel sale(s) added, ${s.unmatched} without vehicle`); route(); });
+  btn('#push', async () => { const s = await api('/api/loyverse/push-vehicles', { method: 'POST' });
+    toast(`Loyverse customers: ${s.created} created, ${s.linked} linked, ${s.updated} updated`); state.vehicles = []; route(); });
+  for (const b of $$('[data-assign]', main)) b.onclick = async () => {
+    const sel = $(`[data-um="${b.dataset.assign}"]`, main);
+    if (!sel.value) return toast('Choose the vehicle first', true);
+    try { await api(`/api/loyverse/unmatched/${b.dataset.assign}/assign`, { method: 'POST', body: { vehicle_id: sel.value } }); toast('Added to ' + sel.selectedOptions[0].text); route(); }
+    catch (err) { toast(err.message, true); }
+  };
+  for (const b of $$('[data-ignore]', main)) b.onclick = async () => {
+    try { await api(`/api/loyverse/unmatched/${b.dataset.ignore}/ignore`, { method: 'POST' }); route(); } catch (err) { toast(err.message, true); }
+  };
 };
 
 // --- oil change / service
@@ -512,7 +644,7 @@ pages.vehicles = async (main) => {
     </div><div class="actions"><button class="primary" type="submit">Add vehicle</button></div></form></div>
     <div class="card"><h2>Fleet</h2><div class="table-wrap"><table>
       <tr><th>Reg. no.</th><th>Model</th><th>Fuel</th><th>Odometer</th><th>Oil interval</th><th>Driver</th><th>Oil change</th><th>Active</th></tr>
-      ${state.vehicles.map((v) => `<tr data-v="${v.id}"><td><b>${esc(v.reg_no)}</b></td><td>${esc(v.model)}</td><td><select data-k="fuel_type">${VEHICLE_FUELS.map((x) => `<option ${x === v.fuel_type ? 'selected' : ''}>${x}</option>`).join('')}</select></td>
+      ${state.vehicles.map((v) => `<tr data-v="${v.id}"><td><b>${vlink(v.id, v.reg_no)}</b>${v.loyverse_customer_id ? '<br><small class="muted">🧾 in Loyverse</small>' : ''}</td><td>${esc(v.model)}</td><td><select data-k="fuel_type">${VEHICLE_FUELS.map((x) => `<option ${x === v.fuel_type ? 'selected' : ''}>${x}</option>`).join('')}</select></td>
         <td>${fmt(v.current_km)} km</td>
         <td><input type="number" min="100" value="${v.oil_interval_km}" data-k="oil_interval_km" style="width:100px"></td>
         <td><select data-k="assigned_driver_id">${driverOpts(v.assigned_driver_id)}</select></td>
@@ -584,7 +716,8 @@ pages.profile = async (main) => {
 const NAV = [
   ['dashboard', '📊', 'Dashboard'], ['trips', '🚗', 'Daily km'], ['fuel', '⛽', 'Fuel'],
   ['services', '🛢', 'Service'], ['accidents', '⚠️', 'Accidents'],
-  ['vehicles', '🚐', 'Vehicles', 'admin'], ['drivers', '👤', 'Drivers', 'admin'], ['profile', '⚙️', 'Profile'],
+  ['vehicles', '🚐', 'Vehicles', 'admin'], ['drivers', '👤', 'Drivers', 'admin'], ['loyverse', '🧾', 'Loyverse', 'admin'],
+  ['profile', '⚙️', 'Profile'],
 ];
 
 function renderLogin() {
@@ -614,16 +747,18 @@ function renderShell() {
 
 async function route() {
   if (!state.user) return;
-  let page = location.hash.replace(/^#\/?/, '') || 'dashboard';
+  let [page, param] = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/');
   const nav = NAV.find((n) => n[0] === page);
-  if (!nav || (nav[3] && nav[3] !== state.user.role)) page = 'dashboard';
-  $$('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === page));
+  const hidden = page === 'vehicle' && param; // pages without a menu entry
+  if (!hidden && (!nav || (nav[3] && nav[3] !== state.user.role))) page = 'dashboard';
+  const activeNav = page === 'vehicle' ? (state.user.role === 'admin' ? 'vehicles' : 'dashboard') : page;
+  $$('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === activeNav));
   const main = $('#main');
   main.innerHTML = '<p class="muted">Loading…</p>';
   try {
     if (state.user.role === 'admin' && !state.drivers) state.drivers = await api('/api/drivers');
     if (!state.vehicles.length) await refreshVehicles();
-    await pages[page](main);
+    await pages[page](main, param ? decodeURIComponent(param) : undefined);
   } catch (e) { main.innerHTML = `<div class="alert danger">${esc(e.message)}</div>`; }
   window.scrollTo(0, 0);
 }

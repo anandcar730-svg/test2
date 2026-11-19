@@ -122,3 +122,7 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
 @media (prefers-color-scheme: dark) {
   .badge.fuel-CNG { color: #4ade80; } .badge.fuel-Petrol { color: #fb923c; } .badge.fuel-Diesel { color: #cbd5e1; } .badge.fuel-EV { color: #93c5fd; }
 }
+.badge.src-pos { background: color-mix(in srgb, #7c3aed 14%, transparent); color: #6d28d9; margin-top: 3px; }
+a.vlink { color: inherit; text-decoration: underline dotted; text-underline-offset: 3px; }
+a.vlink:hover { color: var(--brand-2); }
+@media (prefers-color-scheme: dark) { .badge.src-pos { color: #c4b5fd; } }

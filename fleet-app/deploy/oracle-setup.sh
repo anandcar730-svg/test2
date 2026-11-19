@@ -119,7 +119,7 @@ say "Installing the app to $APP_DIR"
 id fleet >/dev/null 2>&1 || useradd --system --home "$DATA_DIR" --shell /usr/sbin/nologin fleet
 mkdir -p "$APP_DIR" "$DATA_DIR" "$BACKUP_DIR"
 rm -rf "$APP_DIR/public"
-cp -r "$SRC_DIR/server.js" "$SRC_DIR/package.json" "$SRC_DIR/public" "$APP_DIR/"
+cp -r "$SRC_DIR"/*.js "$SRC_DIR/package.json" "$SRC_DIR/public" "$APP_DIR/"
 chown -R root:root "$APP_DIR"
 chown -R fleet:fleet "$DATA_DIR"
 chmod 750 "$DATA_DIR"
