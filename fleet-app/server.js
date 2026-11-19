@@ -638,6 +638,9 @@ route('POST', '/api/loyverse/unmatched/:id/ignore', { auth: 'admin' }, ({ params
   return { ok: true };
 });
 
+// --- upkeep: parts & warranties, wheels, daily oil/coolant check, complaints
+const maintenance = require('./maintenance')({ db, all, get, run, route, saveImage, getVehicle, num, str, isoDate, bad, HttpError, today });
+
 // --- vehicle documents: insurance / pollution / fitness / tax / permit (admin)
 const documents = require('./documents')({ db, all, get, run, today });
 const { FILE_FIELDS } = require('./documents');
@@ -696,6 +699,7 @@ route('GET', '/api/vehicles/:id/summary', ({ user, params, query }) => {
                     WHERE t.vehicle_id=:v ${mine} ORDER BY t.date DESC, t.id DESC LIMIT 30`),
     accidents: listers.accidents(user, new URLSearchParams({ vehicle: String(v.id) })).slice(0, 30),
     documents: documents.forVehicle(v.id),
+    ...maintenance.forVehicle(v.id, user),
   };
 });
 
@@ -805,6 +809,7 @@ route('GET', '/api/dashboard', ({ user }) => {
       cost_per_km: kmForCost > 0 ? +(monthFuel.amount / kmForCost).toFixed(2) : null },
     open_accidents: get(`SELECT COUNT(*) AS n FROM accidents WHERE status!='closed' ${dw}`, p).n,
     pos_unmatched: mine ? 0 : get(`SELECT COUNT(*) AS n FROM pos_unmatched WHERE status='pending'`).n,
+    ...maintenance.dashboard(user),
     doc_alerts: documents.alerts(mine ? all(`SELECT id FROM vehicles WHERE assigned_driver_id=?`, user.id).map((x) => x.id) : null),
     vehicles: mine ? vehicles.filter((v) => v.assigned_driver_id === user.id || ['overdue', 'due_soon'].includes(v.oil_status)
       || get(`SELECT 1 AS x FROM trips WHERE vehicle_id=:v AND driver_id=:me UNION SELECT 1 FROM fuel_logs WHERE vehicle_id=:v AND driver_id=:me LIMIT 1`, { v: v.id, me: user.id })) : vehicles,

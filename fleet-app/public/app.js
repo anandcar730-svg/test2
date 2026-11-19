@@ -218,6 +218,15 @@ pages.dashboard = async (main) => {
     ${alerts.map((v) => `<div class="alert ${v.oil_status === 'overdue' ? 'danger' : 'warn'}">
       🛢 <b>${esc(v.reg_no)}</b>: oil change ${v.oil_status === 'overdue'
         ? `<b>overdue by ${fmt(-v.oil_remaining_km)} km</b>` : `due in ${fmt(v.oil_remaining_km)} km`} (at ${fmt(v.oil_due_km)} km)</div>`).join('')}
+    ${(d.checks_today || []).filter((c) => !c.done && (isAdmin || c.assigned_driver_id === state.user.id)).length && !isAdmin
+      ? `<div class="alert warn">✅ Daily oil &amp; coolant check not done yet today. <a href="#/trips">Check now</a></div>` : ''}
+    ${(d.fluid_alerts || []).map((c) => `<div class="alert ${c.oil === 'low' ? 'danger' : 'warn'}">🛢 <b>${esc(c.reg_no)}</b>: ${[c.oil === 'low' ? 'engine oil LOW' : '',
+      c.coolant === 'low' ? 'coolant LOW' : ''].filter(Boolean).join(' and ')} (${niceDate(c.date)})${c.notes ? ` – ${esc(c.notes)}` : ''}</div>`).join('')}
+    ${(d.part_alerts || []).map((p) => `<div class="alert ${p.state === 'expired' ? 'danger' : 'warn'}">🔋 <b>${esc(p.reg_no)}</b>: ${esc(p.name)}${
+      p.serial_no ? ` (S/N ${esc(p.serial_no)})` : ''} ${p.kind === 'battery' ? 'warranty' : ''} ${p.state === 'expired' ? `<b>expired ${-p.days_left} day(s) ago</b>`
+      : `expires in ${p.days_left} day(s)`} (${niceDate(p.expiry_date)}) · <a href="#/vehicle/${p.vehicle_id}">View</a></div>`).join('')}
+    ${d.complaints_open ? `<div class="alert ${d.complaints_high ? 'danger' : 'warn'}">📣 ${d.complaints_open} open complaint(s)${
+      d.complaints_high ? `, <b>${d.complaints_high} high priority</b>` : ''}. <a href="#/complaints">View</a></div>` : ''}
     ${(d.doc_alerts || []).map((a) => `<div class="alert ${a.status === 'expired' ? 'danger' : 'warn'}">📄 ${docAlertText(a)}${
       isAdmin ? ' · <a href="#/documents">Documents</a>' : ''}</div>`).join('')}
     ${d.pos_unmatched ? `<div class="alert warn">🧾 ${d.pos_unmatched} Loyverse fuel sale(s) need a vehicle. <a href="#/loyverse">Assign</a></div>` : ''}
@@ -231,6 +240,8 @@ pages.dashboard = async (main) => {
       <div class="stat"><div class="v">${d.month.cost_per_km !== null ? money(d.month.cost_per_km) : '—'}</div><div class="l">Fuel cost / km</div></div>
       <div class="stat"><div class="v">${money(d.month.service_cost)}</div><div class="l">Service spend this month</div></div>
       <div class="stat"><div class="v">${d.month.accidents}</div><div class="l">Accidents this month</div></div>
+      ${isAdmin && (d.checks_today || []).length ? `<div class="stat"><div class="v">${d.checks_today.filter((c) => c.done).length}/${d.checks_today.length}</div>
+        <div class="l">Daily oil &amp; coolant checks today · <a href="#/trips">see</a></div></div>` : ''}
     </div>
     <div class="card"><h2>Kilometers – last 14 days</h2>
       ${d.daily.length ? `<div class="bars">${d.daily.map((x) => `<div class="b" title="${x.date}: ${fmt(x.km, 1)} km">
@@ -264,7 +275,10 @@ const oilBadge = (v) => {
 pages.trips = async (main) => {
   await refreshVehicles();
   const open = await api('/api/trips/open');
+  const checks = await api('/api/checks/today');
   main.innerHTML = `<h1>Daily kilometers</h1>
+    ${checksTodayCard(state.user.role === 'admin' ? checks : checks.filter((c) => c.assigned_driver_id === state.user.id).length
+      ? checks.filter((c) => c.assigned_driver_id === state.user.id) : checks)}
     ${open.map((t) => `<div class="card"><h2>🟢 Trip in progress – ${esc(t.reg_no)}</h2>
       <p class="muted">Started ${esc(t.date)} at <b>${fmt(t.start_km)} km</b>. Enter the odometer reading at the end of the day.</p>
       <form data-end="${t.id}"><div class="fields">
@@ -309,6 +323,7 @@ pages.trips = async (main) => {
     bindDeletes($('#list', main), () => load(qs));
   };
   bindFilters($('#flt', main), 'trips', load);
+  bindCheckButtons(main, checks);
 };
 
 // --- fuel & charging (CNG / Petrol / Diesel / EV)
@@ -432,6 +447,7 @@ pages.vehicle = async (main, id) => {
       <div class="stat"><div class="v" style="font-size:1rem">${oilBadge(v)}</div><div class="l">Oil change</div></div>
     </div>
     ${regCard(d.documents, admin, v.id)}
+    ${upkeepCards(d, admin)}
     <div class="card"><h2>All time</h2><p>${fmt(d.totals.km, 1)} km driven · ${money(d.totals.fuel_amount)} fuel · ${money(d.totals.service_cost)} service · ${d.totals.accidents} accident(s)</p></div>
     <div class="card"><h2>📄 Documents</h2>
       <div class="grid" style="margin:0">${DOCS.map(([k, l]) => `<div class="stat"><div class="l">${l}</div><div style="margin-top:6px">${docCell(d.documents?.docs?.[k])}</div>
@@ -461,6 +477,7 @@ pages.vehicle = async (main, id) => {
     </table></div></div>
     <div class="card"><h2>Accidents</h2>${d.accidents.length ? accidentTable(d.accidents) : '<p class="muted">No accidents. 👍</p>'}</div>`;
   bindOdoButtons(main, () => route());
+  bindUpkeep(main, d);
 };
 
 // Scanned papers: photo thumbnail or PDF link
@@ -595,6 +612,314 @@ pages['vehicle-edit'] = async (main, id) => {
     location.hash = `#/vehicle/${v.id}`;
   }); };
 };
+
+// ================================================================== upkeep: parts, wheels, daily checks, complaints
+const CHECK_LABEL = { ok: '✅ OK', topped_up: '🟡 Topped up', low: '🔴 Low' };
+const WHEEL_KINDS = { alignment: 'Wheel alignment', balancing: 'Wheel balancing', rotation: 'Tyre rotation', pressure: 'Air pressure check',
+  puncture: 'Puncture repair', damage: 'Tyre / wheel damage', replacement: 'Tyre replacement', other: 'Other' };
+const WHEEL_POS = [['FL', 'Front left'], ['FR', 'Front right'], ['RL', 'Rear left'], ['RR', 'Rear right'], ['SPARE', 'Spare'], ['ALL', 'All wheels']];
+const COMPLAINT_CATS = { mechanical: 'Mechanical / running problem', damage_found: 'Damage found on vehicle', other_driver: 'Damage / misuse by another driver',
+  electrical: 'Electrical / AC / lights', tyres: 'Tyres / wheels', cleanliness: 'Cleanliness', missing_item: 'Missing item / tool', other: 'Other' };
+const COMPLAINT_STATUS = { open: 'Open', in_progress: 'In progress', resolved: 'Resolved', rejected: 'Rejected' };
+const WARRANTY_OPTS = [['', '— none / use expiry date —'], ['6', '6 months'], ['12', '1 year'], ['18', '18 months'], ['24', '2 years'],
+  ['36', '3 years'], ['48', '4 years'], ['60', '5 years'], ['72', '6 years']];
+
+/**
+ * Small form in a pop-up. fields: [{ name, label, type, options:[[value,label]], required, hint, placeholder, multiple, showIf(form) }]
+ * types: text | number | date | select | textarea | photo | checks (several boxes) | seg (one of several buttons)
+ */
+function formDialog({ title, intro = '', fields, values = {}, submit = 'Save', onSubmit }) {
+  const v = (n) => esc(values[n] ?? '');
+  const html = (fd) => {
+    const { name, label, type = 'text', options = [], required, hint, placeholder = '' } = fd;
+    const req = required ? ' required' : '';
+    const star = required ? ' *' : '';
+    const small = hint ? `<small class="muted">${hint}</small>` : '';
+    if (type === 'photo') return `<div data-fd="${name}" class="full">${photoField(name, label, { multiple: fd.multiple, required })}${small}</div>`;
+    if (type === 'select') {
+      return `<label data-fd="${name}"${fd.full ? ' class="full"' : ''}><span>${esc(label)}${star}</span><select name="${name}"${req}>${options.map(([ov, ol]) =>
+        `<option value="${esc(ov)}" ${String(values[name] ?? '') === String(ov) ? 'selected' : ''}>${esc(ol)}</option>`).join('')}</select>${small}</label>`;
+    }
+    if (type === 'textarea') return `<label data-fd="${name}" class="full"><span>${esc(label)}${star}</span><textarea name="${name}" placeholder="${esc(placeholder)}"${req}>${v(name)}</textarea>${small}</label>`;
+    if (type === 'checks' || type === 'seg') {
+      const multi = type === 'checks';
+      const cur = multi ? String(values[name] || '').split(',') : [String(values[name] ?? '')];
+      return `<div data-fd="${name}" class="full"><label><span>${esc(label)}${star}</span></label><div class="seg">${options.map(([ov, ol]) =>
+        `<label><input type="${multi ? 'checkbox' : 'radio'}" name="${name}" value="${esc(ov)}" ${cur.includes(String(ov)) ? 'checked' : ''}${!multi && required ? ' required' : ''}><span>${esc(ol)}</span></label>`).join('')}</div>${small}</div>`;
+    }
+    return `<label data-fd="${name}"${fd.full ? ' class="full"' : ''}><span>${esc(label)}${star}</span><input name="${name}" type="${type}" value="${v(name)}" placeholder="${esc(placeholder)}"${
+      type === 'number' ? ' step="any" min="0"' : ''}${req}>${small}</label>`;
+  };
+  const dlg = document.createElement('dialog');
+  dlg.innerHTML = `<form><h2>${esc(title)}</h2>${intro ? `<p class="muted" style="margin-top:0">${intro}</p>` : ''}<div class="fields">${fields.map(html).join('')}</div>
+    <div class="actions"><button class="primary" type="submit">${esc(submit)}</button><button type="button" data-cancel>Cancel</button></div></form>`;
+  document.body.appendChild(dlg);
+  const f = dlg.querySelector('form');
+  bindPhotoPickers(f);
+  dlg.querySelector('[data-cancel]').onclick = () => dlg.close();
+  dlg.addEventListener('close', () => dlg.remove());
+  const update = () => fields.forEach((fd) => {
+    if (!fd.showIf) return;
+    const show = fd.showIf(f), box = f.querySelector(`[data-fd="${fd.name}"]`);
+    box.style.display = show ? '' : 'none';
+    box.querySelectorAll('input,select,textarea').forEach((el) => { if (fd.required) el.required = show; });
+  });
+  f.addEventListener('change', update);
+  update();
+  f.onsubmit = (e) => { e.preventDefault(); submitting(f, async () => {
+    const out = {};
+    for (const fd of fields) {
+      if (fd.showIf && !fd.showIf(f)) continue;
+      if (fd.type === 'photo') out[fd.name] = fd.multiple ? f._photos[fd.name] : f._photos[fd.name][0];
+      else if (fd.type === 'checks') out[fd.name] = $$(`[name="${fd.name}"]:checked`, f).map((x) => x.value);
+      else if (fd.type === 'seg') out[fd.name] = ($(`[name="${fd.name}"]:checked`, f) || {}).value;
+      else out[fd.name] = f.elements[fd.name].value;
+    }
+    await onSubmit(out);
+    dlg.close();
+  }); };
+  dlg.showModal();
+  return f;
+}
+
+// ---- parts with warranty / expiry
+const partExpiry = (p) => (p.status === 'replaced'
+  ? `<span class="badge">Replaced ${niceDate(p.replaced_on)}</span>`
+  : docCell(p.expiry_date ? { upto: p.expiry_date, status: p.state === 'unknown' ? 'ok' : p.state, days_left: p.days_left } : null));
+function partDialog(vehicle, kind, part) {
+  const isBattery = kind === 'battery', isTyre = kind === 'tyre';
+  formDialog({
+    title: `${part ? 'Edit' : 'Add'} ${isBattery ? 'battery' : isTyre ? 'tyre' : 'part'} – ${vehicle.reg_no}`,
+    intro: isBattery && !part ? 'Adding a new battery marks the previous one as replaced.' : 'Expiry is worked out from the installed date and warranty, or enter the expiry date yourself.',
+    values: part || { installed_on: today(), name: isBattery ? 'Battery' : '' },
+    fields: [
+      ...(isBattery ? [] : [{ name: 'name', label: isTyre ? 'Tyre (size / model)' : 'Part name', required: true,
+        placeholder: isTyre ? 'e.g. 185/65 R15' : 'e.g. Fire extinguisher, wiper blades, FASTag, GPS tracker, first-aid kit' }]),
+      { name: 'brand', label: 'Brand', placeholder: isBattery ? 'e.g. Exide, Amaron' : '' },
+      { name: 'serial_no', label: 'Serial number', placeholder: isBattery ? 'printed on the battery' : '' },
+      ...(isTyre ? [{ name: 'position', label: 'Position', type: 'select', options: [['', '—'], ...WHEEL_POS.filter(([k]) => k !== 'ALL')] }] : []),
+      { name: 'installed_on', label: 'Installed / bought on', type: 'date' },
+      { name: 'installed_km', label: 'Odometer when installed (km)', type: 'number' },
+      { name: 'warranty_months', label: 'Warranty', type: 'select', options: WARRANTY_OPTS },
+      { name: 'expiry_date', label: isBattery ? 'Warranty till (optional)' : 'Expiry / valid till', type: 'date', hint: 'Leave empty to use installed date + warranty' },
+      { name: 'cost', label: 'Cost (₹)', type: 'number' },
+      { name: 'vendor', label: 'Shop / vendor' },
+      { name: 'notes', label: 'Notes', type: 'textarea' },
+      { name: 'photo', label: part?.photo ? 'Photo (adds a new one)' : 'Photo (serial number / warranty card)', type: 'photo' },
+    ],
+    onSubmit: async (b) => {
+      if (!b.photo) delete b.photo;
+      if (part) await api(`/api/parts/${part.id}`, { method: 'PUT', body: b });
+      else await api('/api/parts', { method: 'POST', body: { ...b, kind, vehicle_id: vehicle.id } });
+      toast('Saved'); route();
+    },
+  });
+}
+function partsCard(d, admin) {
+  const v = d.vehicle;
+  const rows = d.parts || [];
+  return `<div class="card"><div class="row"><h2 style="margin:0">🔋 Battery &amp; parts with warranty / expiry</h2><span class="spacer"></span>
+    ${admin ? `<button class="small" data-addpart="battery">+ Battery</button><button class="small" data-addpart="tyre">+ Tyre</button>
+      <button class="small" data-addpart="other">+ Other part</button>` : ''}</div>
+    ${rows.length ? `<div class="table-wrap" style="margin-top:10px"><table>
+      <tr><th>Part</th><th>Brand / serial no.</th><th>Installed</th><th>Warranty / expiry</th><th>Cost</th><th>Photo</th>${admin ? '<th></th>' : ''}</tr>
+      ${rows.map((p) => `<tr style="${p.status === 'replaced' ? 'opacity:.55' : ''}"><td><b>${esc(p.kind === 'battery' ? '🔋 ' + p.name : p.kind === 'tyre' ? '🛞 ' + p.name : '🧩 ' + p.name)}</b>
+          ${p.position ? `<br><small class="muted">${esc(p.position)}</small>` : ''}${p.notes ? `<br><small class="muted">${esc(p.notes)}</small>` : ''}</td>
+        <td>${esc(p.brand || '—')}${p.serial_no ? `<br><small>S/N <b>${esc(p.serial_no)}</b></small>` : ''}</td>
+        <td>${niceDate(p.installed_on)}${p.installed_km ? `<br><small class="muted">at ${fmt(p.installed_km)} km</small>` : ''}${p.vendor ? `<br><small class="muted">${esc(p.vendor)}</small>` : ''}</td>
+        <td>${partExpiry(p)}${p.warranty_months ? `<br><small class="muted">${p.warranty_months % 12 === 0 ? `${p.warranty_months / 12} yr` : `${p.warranty_months} months`} warranty</small>` : ''}</td>
+        <td>${p.cost ? money(p.cost) : '—'}</td><td>${thumb(p.photo)}</td>
+        ${admin ? `<td style="white-space:nowrap"><button class="small" data-editpart="${p.id}">Edit</button>
+          ${p.status === 'active' ? `<button class="small" data-replpart="${p.id}">Replaced</button>` : ''}<button class="small danger" data-delpart="${p.id}">Delete</button></td>` : ''}</tr>`).join('')}
+    </table></div>` : `<p class="muted">No battery or parts recorded yet.${admin ? ' Add the battery with its serial number and warranty.' : ''}</p>`}</div>`;
+}
+
+// ---- wheels & tyres
+function wheelDialog(vehicle) {
+  formDialog({
+    title: `Wheel / tyre work – ${vehicle.reg_no}`,
+    values: { date: today() },
+    fields: [
+      { name: 'kind', label: 'What was done', type: 'select', required: true, options: [['', 'Choose…'], ...Object.entries(WHEEL_KINDS)] },
+      { name: 'date', label: 'Date', type: 'date', required: true },
+      { name: 'positions', label: 'Which wheel(s)', type: 'checks', options: WHEEL_POS },
+      { name: 'odometer', label: 'Odometer (km)', type: 'number' },
+      { name: 'cost', label: 'Cost (₹)', type: 'number' },
+      { name: 'garage', label: 'Garage / shop' },
+      { name: 'notes', label: 'Details', type: 'textarea', placeholder: 'e.g. sidewall cut, replaced with MRF ZVTV, alignment was off' },
+      { name: 'photo', label: 'Photo', type: 'photo' },
+    ],
+    onSubmit: async (b) => { await api('/api/wheels', { method: 'POST', body: { ...b, vehicle_id: vehicle.id } }); toast('Wheel work saved'); route(); },
+  });
+}
+function wheelsCard(d, admin) {
+  const rows = d.wheels || [];
+  return `<div class="card"><div class="row"><h2 style="margin:0">🛞 Wheels &amp; tyres</h2><span class="spacer"></span><button class="small" data-addwheel>+ Log wheel / tyre work</button></div>
+    ${rows.length ? `<div class="table-wrap" style="margin-top:10px"><table>
+      <tr><th>Date</th><th>Work</th><th>Wheels</th><th>Odometer</th><th>Cost</th><th>Garage</th><th>Details</th><th>Photo</th><th>By</th>${admin ? '<th></th>' : ''}</tr>
+      ${rows.map((w) => `<tr><td>${niceDate(w.date)}</td><td><b>${esc(w.kind_label)}</b></td><td>${esc((w.positions || '—').replaceAll(',', ', '))}</td>
+        <td>${w.odometer ? fmt(w.odometer) : '—'}</td><td>${w.cost ? money(w.cost) : '—'}</td><td>${esc(w.garage || '')}</td>
+        <td class="wrap">${esc(w.notes || '')}</td><td>${thumb(w.photo)}</td><td>${esc(w.by_name)}</td>
+        ${admin ? `<td><button class="small danger" data-delwheel="${w.id}">Delete</button></td>` : ''}</tr>`).join('')}
+    </table></div>` : '<p class="muted">No wheel or tyre work recorded yet (alignment, balancing, puncture, replacement…).</p>'}</div>`;
+}
+
+// ---- daily oil & coolant check
+const CHECK_OPTS = [['ok', '✅ OK'], ['topped_up', '🟡 Topped up'], ['low', '🔴 Low']];
+function checkDialog(vehicle, existing) {
+  const ev = vehicle.fuel_type === 'EV';
+  formDialog({
+    title: `✅ Daily check – ${vehicle.reg_no}`,
+    intro: ev ? 'Electric vehicle: check the coolant level only.' : 'Check with the engine cold, on level ground.',
+    values: existing || {},
+    fields: [
+      ...(ev ? [] : [{ name: 'oil', label: 'Engine oil level', type: 'seg', options: CHECK_OPTS, required: true }]),
+      { name: 'coolant', label: 'Coolant level', type: 'seg', options: CHECK_OPTS, required: true },
+      { name: 'notes', label: 'Notes', type: 'textarea', placeholder: 'e.g. topped up 200 ml oil' },
+      { name: 'photo', label: 'Photo (optional)', type: 'photo' },
+    ],
+    submit: 'Save check',
+    onSubmit: async (b) => {
+      const r = await api('/api/checks', { method: 'POST', body: { ...b, vehicle_id: vehicle.id } });
+      toast(r.oil === 'low' || r.coolant === 'low' ? 'Saved – the admin will see the low level' : 'Daily check saved ✅'); route();
+    },
+  });
+}
+function checksTodayCard(list, title = '✅ Daily check – engine oil & coolant') {
+  if (!list.length) return '';
+  const mine = list.filter((c) => c.assigned_driver_id === state.user.id);
+  const rows = state.user.role === 'admin' ? list : [...mine, ...list.filter((c) => c.assigned_driver_id !== state.user.id)];
+  const done = list.filter((c) => c.done).length;
+  return `<div class="card"><h2>${title}</h2><p class="muted" style="margin-top:0">Today: <b>${done} of ${list.length}</b> vehicles checked.</p>
+    <div class="table-wrap"><table><tr><th>Vehicle</th><th>Engine oil</th><th>Coolant</th><th>Checked by</th></tr>
+    ${rows.map((c) => `<tr><td><b>${vlink(c.vehicle_id, c.reg_no)}</b>${c.assigned_driver_id === state.user.id ? ' <span class="badge">yours</span>' : ''}
+      <br><button class="small ${c.done ? '' : 'primary'}" style="margin-top:6px" data-check="${c.vehicle_id}">${c.done ? 'Update' : '✅ Check now'}</button></td>
+      <td>${c.done ? (c.fuel_type === 'EV' ? '<small class="muted">EV</small>' : CHECK_LABEL[c.oil] || '—') : '—'}</td><td>${c.done ? CHECK_LABEL[c.coolant] || '—' : '—'}</td>
+      <td>${c.done ? `${esc(c.checked_by)}${c.notes ? `<br><small class="muted">${esc(c.notes)}</small>` : ''}` : '<span class="badge warn">not checked</span>'}</td></tr>`).join('')}
+    </table></div></div>`;
+}
+function bindCheckButtons(root, list) {
+  for (const b of $$('[data-check]', root)) b.onclick = () => {
+    const c = list.find((x) => String(x.vehicle_id) === b.dataset.check);
+    checkDialog({ id: c.vehicle_id, reg_no: c.reg_no, fuel_type: c.fuel_type }, c.done ? c : null);
+  };
+}
+function checksHistoryCard(d) {
+  const rows = d.checks || [];
+  return `<div class="card"><div class="row"><h2 style="margin:0">✅ Daily oil &amp; coolant checks <small class="muted">(last 14)</small></h2><span class="spacer"></span>
+    <button class="small primary" data-checkveh>Check today</button></div>
+    ${rows.length ? `<div class="table-wrap" style="margin-top:10px"><table><tr><th>Date</th><th>Engine oil</th><th>Coolant</th><th>By</th><th>Notes</th><th>Photo</th></tr>
+      ${rows.map((c) => `<tr><td>${niceDate(c.date)}</td><td>${c.oil ? CHECK_LABEL[c.oil] : '<small class="muted">—</small>'}</td><td>${CHECK_LABEL[c.coolant] || '—'}</td>
+        <td>${esc(c.checked_by)}</td><td class="wrap">${esc(c.notes || '')}</td><td>${thumb(c.photo)}</td></tr>`).join('')}</table></div>`
+    : '<p class="muted">No checks yet.</p>'}</div>`;
+}
+
+// ---- complaints
+let peopleCache = null;
+async function people() { return (peopleCache ??= await api('/api/people')); }
+async function complaintDialog(vehicleId) {
+  const ppl = (await people()).filter((p) => p.id !== state.user.id);
+  await refreshVehicles();
+  const mine = state.vehicles.find((v) => v.assigned_driver_id === state.user.id);
+  formDialog({
+    title: '📣 Raise a complaint',
+    intro: 'Report a problem, damage you found, or damage / misuse by someone who used the vehicle before you.',
+    values: { vehicle_id: vehicleId || mine?.id || '', occurred_on: today(), priority: 'normal' },
+    fields: [
+      { name: 'vehicle_id', label: 'Vehicle', type: 'select', required: true, options: [['', 'Choose…'], ...state.vehicles.filter((v) => v.active).map((v) => [v.id, v.reg_no])] },
+      { name: 'category', label: 'Type of complaint', type: 'select', required: true, options: [['', 'Choose…'], ...Object.entries(COMPLAINT_CATS)] },
+      { name: 'other_user_id', label: 'Who used the vehicle before you?', type: 'select', required: true,
+        options: [['', 'Choose…'], ...ppl.map((p) => [p.id, p.name]), ['__other', 'Someone else (type the name)']],
+        showIf: (f) => f.category.value === 'other_driver' },
+      { name: 'other_user_name', label: 'Their name', required: true, placeholder: 'e.g. guest driver, mechanic, pastor',
+        showIf: (f) => f.category.value === 'other_driver' && f.other_user_id.value === '__other' },
+      { name: 'title', label: 'Short title', placeholder: 'e.g. Rear bumper dent, AC not cooling' },
+      { name: 'occurred_on', label: 'Noticed on', type: 'date' },
+      { name: 'odometer', label: 'Odometer (km)', type: 'number' },
+      { name: 'priority', label: 'Priority', type: 'seg', options: [['low', 'Low'], ['normal', 'Normal'], ['high', '🔴 High – unsafe / urgent']] },
+      { name: 'description', label: 'What is the problem?', type: 'textarea', required: true, placeholder: 'Describe what you saw, when, and where on the vehicle' },
+      { name: 'photos', label: 'Photos (needed for damage)', type: 'photo', multiple: true },
+    ],
+    submit: 'Send complaint',
+    onSubmit: async (b) => {
+      if (b.other_user_id === '__other') delete b.other_user_id;
+      await api('/api/complaints', { method: 'POST', body: b });
+      toast('Complaint sent to the admin'); route();
+    },
+  });
+}
+const complaintStatusBadge = (s) => `<span class="badge ${s === 'resolved' ? 'ok' : s === 'rejected' ? '' : s === 'in_progress' ? 'warn' : 'danger'}">${COMPLAINT_STATUS[s] || esc(s)}</span>`;
+function complaintTable(rows, admin, { showVehicle = true } = {}) {
+  if (!rows.length) return '<p class="muted">No complaints. 👍</p>';
+  return `<div class="table-wrap"><table><tr><th>Date</th>${showVehicle ? '<th>Vehicle</th>' : ''}<th>Complaint</th><th>Reported by</th><th>Used before by</th><th>Photos</th><th>Status</th>${admin ? '<th></th>' : ''}</tr>
+    ${rows.map((c) => `<tr><td>${niceDate(c.occurred_on || c.created_at.slice(0, 10))}</td>${showVehicle ? `<td>${vlink(c.vehicle_id, c.reg_no)}</td>` : ''}
+      <td class="wrap">${c.priority === 'high' ? '<span class="badge danger">HIGH</span> ' : ''}<b>${esc(c.title || c.category_label)}</b>
+        <br><small class="muted">${esc(c.category_label)}${c.odometer ? ` · ${fmt(c.odometer)} km` : ''}</small><br>${esc(c.description)}
+        ${c.admin_notes ? `<br><small><b>Admin:</b> ${esc(c.admin_notes)}</small>` : ''}</td>
+      <td>${esc(c.reported_by_name)}</td><td>${c.other_user ? `<b>${esc(c.other_user)}</b>` : '—'}</td>
+      <td><div class="photos">${c.photos.map(thumb).join('')}</div></td><td>${complaintStatusBadge(c.status)}</td>
+      ${admin ? `<td style="white-space:nowrap"><button class="small" data-cupd="${c.id}">Update</button> <button class="small danger" data-cdel="${c.id}">Delete</button></td>` : ''}</tr>`).join('')}
+  </table></div>`;
+}
+function bindComplaintButtons(root, rows) {
+  for (const b of $$('[data-cupd]', root)) b.onclick = () => {
+    const c = rows.find((x) => String(x.id) === b.dataset.cupd);
+    formDialog({
+      title: `Update complaint – ${c.reg_no}`, intro: esc(c.title || c.category_label), values: c, submit: 'Save',
+      fields: [
+        { name: 'status', label: 'Status', type: 'seg', options: Object.entries(COMPLAINT_STATUS) },
+        { name: 'priority', label: 'Priority', type: 'seg', options: [['low', 'Low'], ['normal', 'Normal'], ['high', 'High']] },
+        { name: 'admin_notes', label: 'Notes / action taken', type: 'textarea', placeholder: 'e.g. spoke to the driver, repaired at ₹1,200' },
+      ],
+      onSubmit: async (body) => { await api(`/api/complaints/${c.id}`, { method: 'PUT', body }); toast('Complaint updated'); route(); },
+    });
+  };
+  for (const b of $$('[data-cdel]', root)) b.onclick = async () => {
+    if (!confirm('Delete this complaint permanently?')) return;
+    try { await api(`/api/complaints/${b.dataset.cdel}`, { method: 'DELETE' }); route(); } catch (e) { toast(e.message, true); }
+  };
+}
+pages.complaints = async (main) => {
+  const admin = state.user.role === 'admin';
+  const [rows, ppl] = await Promise.all([api('/api/complaints'), people()]);
+  void ppl;
+  const open = rows.filter((c) => c.status === 'open' || c.status === 'in_progress');
+  main.innerHTML = `<h1>📣 Complaints</h1>
+    <p class="muted">${admin ? 'Problems and damage reported by drivers.' : 'Report a problem or damage – including damage left by someone who used the vehicle before you.'}</p>
+    <div class="actions" style="margin:0 0 16px"><button class="primary" id="newc">+ Raise a complaint</button></div>
+    <div class="card"><h2>Open (${open.length})</h2>${complaintTable(open, admin)}</div>
+    <div class="card"><h2>Closed (${rows.length - open.length})</h2>${complaintTable(rows.filter((c) => !open.includes(c)), admin)}</div>`;
+  $('#newc', main).onclick = () => complaintDialog();
+  bindComplaintButtons(main, rows);
+};
+
+// ---- vehicle page: all upkeep cards + buttons
+function upkeepCards(d, admin) {
+  return `${partsCard(d, admin)}${wheelsCard(d, admin)}${checksHistoryCard(d)}
+    <div class="card"><div class="row"><h2 style="margin:0">📣 Complaints</h2><span class="spacer"></span><button class="small" data-newc>+ Raise a complaint</button></div>
+      <div style="margin-top:10px">${complaintTable(d.complaints || [], admin, { showVehicle: false })}</div></div>`;
+}
+function bindUpkeep(main, d) {
+  const v = d.vehicle;
+  for (const b of $$('[data-addpart]', main)) b.onclick = () => partDialog(v, b.dataset.addpart);
+  for (const b of $$('[data-editpart]', main)) b.onclick = () => { const p = d.parts.find((x) => String(x.id) === b.dataset.editpart); partDialog(v, p.kind, p); };
+  for (const b of $$('[data-replpart]', main)) b.onclick = async () => {
+    if (!confirm('Mark this part as replaced today?')) return;
+    await api(`/api/parts/${b.dataset.replpart}`, { method: 'PUT', body: { status: 'replaced' } }).catch((e) => toast(e.message, true)); route();
+  };
+  for (const b of $$('[data-delpart]', main)) b.onclick = async () => {
+    if (!confirm('Delete this part record?')) return;
+    await api(`/api/parts/${b.dataset.delpart}`, { method: 'DELETE' }).catch((e) => toast(e.message, true)); route();
+  };
+  $('[data-addwheel]', main).onclick = () => wheelDialog(v);
+  for (const b of $$('[data-delwheel]', main)) b.onclick = async () => {
+    if (!confirm('Delete this wheel record?')) return;
+    await api(`/api/wheels/${b.dataset.delwheel}`, { method: 'DELETE' }).catch((e) => toast(e.message, true)); route();
+  };
+  $('[data-checkveh]', main).onclick = () => checkDialog(v, (d.checks || []).find((c) => c.date === today()));
+  $('[data-newc]', main).onclick = () => complaintDialog(v.id);
+  bindComplaintButtons(main, d.complaints || []);
+}
 
 // --- vehicle documents (admin): insurance, pollution, fitness, tax, permit
 pages.documents = async (main) => {
@@ -988,7 +1313,7 @@ pages.profile = async (main) => {
 // ------------------------------------------------------------------ shell & routing
 const NAV = [
   ['dashboard', '📊', 'Dashboard'], ['trips', '🚗', 'Daily km'], ['fuel', '⛽', 'Fuel'],
-  ['services', '🛢', 'Service'], ['accidents', '⚠️', 'Accidents'],
+  ['services', '🛢', 'Service'], ['accidents', '⚠️', 'Accidents'], ['complaints', '📣', 'Complaints'],
   ['vehicles', '🚐', 'Vehicles', 'admin'], ['drivers', '👤', 'Drivers', 'admin'], ['documents', '📄', 'Documents', 'admin'], ['loyverse', '🧾', 'Loyverse', 'admin'],
   ['profile', '⚙️', 'Profile'],
 ];

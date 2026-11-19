@@ -77,6 +77,22 @@ Lifetime road tax (`LTT`) is shown as **Lifetime**.
 
 If an online lookup is connected, it fills in the same fields. Values you typed are kept wherever the lookup has nothing, and scanned papers are never changed by it.
 
+## Battery, parts, wheels, daily checks and complaints
+These are on each **vehicle page**:
+- **🔋 Battery & parts with warranty / expiry** (admin):
+  - a battery with brand, **serial number**, installed date and odometer, warranty (6 months to 6 years) or an exact date, cost, shop and **photo**. A new battery automatically marks the previous one as *replaced*.
+  - **tyres** and **any other part with an expiry date**, such as a fire extinguisher, wiper blades, FASTag, GPS tracker or first-aid kit.
+  - alerts on the dashboard when something expires within 30 days or has expired.
+- **🛞 Wheels & tyres** (drivers and admin): alignment, balancing, rotation, air pressure, puncture, damage and replacement, with date, which wheel(s), odometer, cost, garage, notes and a photo.
+- **✅ Daily oil & coolant check** (drivers): *OK / Topped up / Low* for engine oil (not asked for EVs) and coolant, once per vehicle per day.
+  - It's on the **Daily km** page.
+  - Drivers get a reminder on their dashboard.
+  - The admin sees "checked today: 3/5", and any **Low** level appears as an alert.
+- **📣 Complaints** (everyone; also its own menu page): report a mechanical problem, damage found, **damage or misuse by another driver** (choose who used the vehicle before you, or type a name), electrical/AC, tyres, cleanliness or a missing item.
+  - Each complaint has a priority and photos. Photos are required for damage.
+  - The admin sets the status: *Open → In progress → Resolved / Rejected*, with notes.
+  - Drivers see their own complaints and the ones about them.
+
 ## Vehicle page
 Click any vehicle number to see everything about that vehicle on one page:
 - details: driver, odometer, mileage, oil-change status
