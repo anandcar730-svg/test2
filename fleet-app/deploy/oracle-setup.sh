@@ -132,12 +132,28 @@ systemctl restart $SERVICE
 
 # ---------------------------------------------------------------- HTTPS
 say "Configuring Caddy for $DOMAIN"
+# Cloudflare proxy (orange cloud): if a Cloudflare Origin Certificate was saved to these
+# two files, use it instead of Let's Encrypt (set Cloudflare SSL/TLS mode to "Full (strict)").
+CF_CERT=/etc/caddy/cloudflare-origin.pem
+CF_KEY=/etc/caddy/cloudflare-origin.key
+TLS_LINE=""
+if [[ -s "$CF_CERT" && -s "$CF_KEY" ]]; then
+  grep -q "BEGIN CERTIFICATE" "$CF_CERT" || die "$CF_CERT is not a certificate (must start with -----BEGIN CERTIFICATE-----)"
+  grep -q "PRIVATE KEY" "$CF_KEY" || die "$CF_KEY is not a private key (must start with -----BEGIN PRIVATE KEY-----)"
+  chown root:caddy "$CF_CERT" "$CF_KEY"
+  chmod 640 "$CF_CERT" "$CF_KEY"
+  TLS_LINE="	tls $CF_CERT $CF_KEY"
+  say "Using the Cloudflare Origin Certificate"
+fi
 cat > /etc/caddy/Caddyfile <<EOF
 $DOMAIN {
+$TLS_LINE
 	encode gzip
 	reverse_proxy 127.0.0.1:$PORT
 }
 EOF
+caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 \
+  || die "Caddy config is invalid. Check with: caddy validate --config /etc/caddy/Caddyfile"
 systemctl enable caddy >/dev/null
 systemctl restart caddy
 

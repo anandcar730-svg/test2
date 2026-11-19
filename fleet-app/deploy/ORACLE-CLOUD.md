@@ -115,3 +115,25 @@ sudo chown -R fleet:fleet /var/lib/fleet && sudo systemctl start fleet-app
 - **"Your connection is not private" or a certificate error:** Caddy is still getting the certificate, or ports 80/443 are blocked. Check `sudo journalctl -u caddy -n 50`.
 - **Oracle stopped my VM:** Oracle may reclaim *idle* Always Free instances. Upgrading the account to **Pay-As-You-Go** stops that, and you still pay nothing as long as you stay within the free limits.
 - **Make off-server copies too.** Download the backups now and then (command above). The daily backups protect against mistakes, but they sit on the same server, so they don't protect against losing the server.
+
+## Using Cloudflare (orange cloud / "Proxied")
+Error **526 Invalid SSL certificate** means Cloudflare couldn't verify the certificate on the server. Pick one of these fixes.
+
+**Option A (simplest): DNS only.** Turn Cloudflare's proxy off for this record.
+1. In Cloudflare, go to **DNS → Records**, edit `driver-log`, and switch it to **DNS only** (grey cloud).
+2. Wait 2 minutes, then on the server run `sudo systemctl restart caddy`.
+3. Caddy gets a free Let's Encrypt certificate and renews it by itself.
+
+**Option B: keep the orange cloud.** Use a Cloudflare Origin Certificate.
+1. In Cloudflare, go to **SSL/TLS → Origin Server → Create Certificate**. Keep the defaults (RSA, hostnames `*.shalomchurch.co.in` and `shalomchurch.co.in`, 15 years) and click **Create**.
+2. On the server, paste the two text boxes into these files:
+   ```bash
+   sudo mkdir -p /etc/caddy
+   sudo nano /etc/caddy/cloudflare-origin.pem   # paste "Origin Certificate", save with Ctrl+O, Enter, Ctrl+X
+   sudo nano /etc/caddy/cloudflare-origin.key   # paste "Private Key", save the same way
+   ```
+3. Run the setup again:
+   `cd ~/fleet-app && sudo bash deploy/oracle-setup.sh driver-log.shalomchurch.co.in`
+4. In Cloudflare, go to **SSL/TLS → Overview** and set the mode to **Full (strict)**.
+
+Cloudflare limits uploads to 100 MB on the free plan. Photos from the app are compressed to well under that.
