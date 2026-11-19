@@ -8,11 +8,11 @@ A driver login website for keeping track of every vehicle, every day. Drivers ca
 |---|---|---|
 | **Login** with username and password | ✔ | ✔ (creates driver logins) |
 | **Daily kilometers**: start the day with the odometer reading and a photo, end the day with the reading and a photo. Distance is calculated for you | ✔ | sees all drivers |
-| **CNG fueling**: date, odometer, kg, ₹/kg, total, station, and a photo of the bill | ✔ | sees all, plus km/kg mileage |
+| **Fuel & charging** for **CNG (kg), Petrol (L), Diesel (L) and EV (kWh)**: date, odometer, quantity, rate, total, station or charger, and a bill photo. EVs also record battery % before and after charging | ✔ | sees all, plus mileage per vehicle (km/kg, km/L, km/kWh) |
 | **Oil change and service**: oil change, general service, tyre, brake, battery, CNG kit; cost, garage, next-due km, and a bill photo | ✔ | sees all |
-| **Oil change alerts**: shows a warning when a change is due within 500 km or is overdue | ✔ | ✔ |
+| **Oil change alerts**: shows a warning when a change is due within 500 km or is overdue (not shown for EVs) | ✔ | ✔ |
 | **Accident report**: date and time, odometer, GPS location, severity, injuries, other party, FIR no., and **up to 8 photos** (at least one is required) | ✔ | updates status (Reported → In review → Insurance claimed → Closed) and adds notes |
-| **Dashboard**: km today and this month, CNG kg and ₹, fuel cost per km, service spend, accidents, 14-day km chart, who is on the road now | own data | whole fleet |
+| **Dashboard**: km today and this month, fuel used per type and ₹, fuel cost per km, service spend, accidents, 14-day km chart, who is on the road now | own data | whole fleet |
 | **Filters and CSV export** (opens in Excel) by driver, vehicle, and date range | own data | ✔ |
 | Manage **vehicles** (reg. no., model, fuel, oil-change interval, assigned driver) and **drivers** (add, reset password, disable) | | ✔ |
 

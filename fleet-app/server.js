@@ -129,6 +129,35 @@ const all = (sql, ...p) => q(sql).all(...p);
 const get = (sql, ...p) => q(sql).get(...p);
 const run = (sql, ...p) => q(sql).run(...p);
 
+// ---------------------------------------------------------------- migrations (safe to run every start)
+function addColumn(table, column, def) {
+  if (!all(`PRAGMA table_info(${table})`).some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+}
+addColumn('fuel_logs', 'fuel_type', "TEXT NOT NULL DEFAULT 'CNG'"); // records made before v1.1 were all CNG
+addColumn('fuel_logs', 'battery_start_pct', 'REAL');
+addColumn('fuel_logs', 'battery_end_pct', 'REAL');
+
+// ---------------------------------------------------------------- fuels
+// qty is stored in fuel_logs.qty_kg and price in price_per_kg (historic names); the unit depends on fuel_type.
+const FUELS = {
+  CNG: { unit: 'kg', label: 'CNG' },
+  Petrol: { unit: 'L', label: 'Petrol' },
+  Diesel: { unit: 'L', label: 'Diesel' },
+  EV: { unit: 'kWh', label: 'EV charging' },
+};
+const VEHICLE_FUELS = ['CNG', 'CNG + Petrol', 'Petrol', 'Diesel', 'EV', 'Petrol + EV (hybrid)'];
+/** The fuel a vehicle normally uses (first one for dual-fuel vehicles). */
+const primaryFuel = (vehicleFuel) => {
+  const f = String(vehicleFuel || 'CNG');
+  if (f === 'EV') return 'EV';
+  return Object.keys(FUELS).find((k) => f.startsWith(k)) || 'CNG';
+};
+const usesOil = (vehicleFuel) => String(vehicleFuel || '') !== 'EV';
+const fuelRow = (r) => {
+  const { qty_kg, price_per_kg, ...rest } = r;
+  return { ...rest, quantity: qty_kg, unit: FUELS[r.fuel_type]?.unit || '', price_per_unit: price_per_kg };
+};
+
 // ---------------------------------------------------------------- auth helpers
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
   const hash = crypto.scryptSync(String(password), salt, 64).toString('hex');
@@ -250,6 +279,10 @@ function vehicleOdometer(vehicleId) {
 }
 
 function oilStatus(vehicle) {
+  if (!usesOil(vehicle.fuel_type)) {
+    return { current_km: vehicleOdometer(vehicle.id), last_oil_change_km: null, last_oil_change_date: null,
+      oil_due_km: null, oil_remaining_km: null, oil_status: 'na' };
+  }
   const last = get(
     `SELECT odometer, next_due_km, date FROM services
       WHERE vehicle_id=? AND type='oil_change' ORDER BY odometer DESC LIMIT 1`, vehicle.id);
@@ -275,7 +308,7 @@ function getVehicle(id, user) {
 }
 
 /** Shared filter builder for list endpoints. Drivers only ever see their own rows. */
-function listFilters(user, query, dateCol, alias = 't') {
+function listFilters(user, query, dateCol, alias = 't', { fuel = false } = {}) {
   const where = [];
   const params = {};
   if (user.role === 'driver') { where.push(`${alias}.driver_id=:me`); params.me = user.id; }
@@ -283,6 +316,7 @@ function listFilters(user, query, dateCol, alias = 't') {
   if (query.get('vehicle')) { where.push(`${alias}.vehicle_id=:vehicle`); params.vehicle = Number(query.get('vehicle')); }
   if (query.get('from')) { where.push(`substr(${dateCol},1,10)>=:from`); params.from = query.get('from'); }
   if (query.get('to')) { where.push(`substr(${dateCol},1,10)<=:to`); params.to = query.get('to'); }
+  if (fuel && FUELS[query.get('fuel_type')]) { where.push(`${alias}.fuel_type=:fuel_type`); params.fuel_type = query.get('fuel_type'); }
   return { sql: where.length ? `WHERE ${where.join(' AND ')}` : '', params };
 }
 
@@ -295,9 +329,9 @@ const listers = {
                 FROM trips t ${JOIN_NAMES('t')} ${f.sql} ORDER BY t.date DESC, t.id DESC LIMIT 1000`, f.params);
   },
   fuel(user, query) {
-    const f = listFilters(user, query, 't.date');
+    const f = listFilters(user, query, 't.date', 't', { fuel: true });
     return all(`SELECT t.*, u.name AS driver_name, v.reg_no
-                FROM fuel_logs t ${JOIN_NAMES('t')} ${f.sql} ORDER BY t.date DESC, t.id DESC LIMIT 1000`, f.params);
+                FROM fuel_logs t ${JOIN_NAMES('t')} ${f.sql} ORDER BY t.date DESC, t.id DESC LIMIT 1000`, f.params).map(fuelRow);
   },
   services(user, query) {
     const f = listFilters(user, query, 't.date');
@@ -409,11 +443,15 @@ route('GET', '/api/vehicles', ({ user }) => {
                      ${user.role === 'driver' ? 'WHERE v.active=1' : ''} ORDER BY v.reg_no`);
   return rows.map((v) => ({ ...v, ...oilStatus(v) }));
 });
+const vehicleFuel = (v, fallback = 'CNG') => {
+  if (v === undefined || v === null || v === '') return fallback;
+  return VEHICLE_FUELS.includes(v) ? v : bad(`Fuel must be one of: ${VEHICLE_FUELS.join(', ')}`);
+};
 route('POST', '/api/vehicles', { auth: 'admin' }, ({ body }) => {
   const reg = str(body.reg_no, 'Registration number', { required: true, max: 30 }).toUpperCase();
   if (get(`SELECT id FROM vehicles WHERE reg_no=?`, reg)) bad('A vehicle with this registration already exists');
   const r = run(`INSERT INTO vehicles (reg_no,model,fuel_type,initial_km,oil_interval_km,assigned_driver_id) VALUES (?,?,?,?,?,?)`,
-    reg, str(body.model, 'Model', { max: 100 }), str(body.fuel_type, 'Fuel', { max: 20 }) || 'CNG',
+    reg, str(body.model, 'Model', { max: 100 }), vehicleFuel(body.fuel_type),
     num(body.initial_km, 'Current odometer', { required: false }) ?? 0,
     num(body.oil_interval_km, 'Oil change interval', { required: false }) || 5000,
     body.assigned_driver_id ? Number(body.assigned_driver_id) : null);
@@ -424,7 +462,7 @@ route('PUT', '/api/vehicles/:id', { auth: 'admin' }, ({ params, body }) => {
   if (!v) bad('Vehicle not found');
   run(`UPDATE vehicles SET model=?, fuel_type=?, oil_interval_km=?, assigned_driver_id=?, active=? WHERE id=?`,
     str(body.model ?? v.model, 'Model', { max: 100 }),
-    str(body.fuel_type ?? v.fuel_type, 'Fuel', { max: 20 }) || 'CNG',
+    vehicleFuel(body.fuel_type, v.fuel_type),
     num(body.oil_interval_km ?? v.oil_interval_km, 'Oil change interval') || 5000,
     body.assigned_driver_id === undefined ? v.assigned_driver_id : body.assigned_driver_id ? Number(body.assigned_driver_id) : null,
     body.active === undefined ? v.active : body.active ? 1 : 0, v.id);
@@ -461,29 +499,40 @@ route('PUT', '/api/trips/:id/end', ({ user, params, body }) => {
   return { ok: true, distance_km: end - t.start_km };
 });
 
-// --- CNG fueling
+// --- fuel & charging (CNG / Petrol / Diesel / EV)
+route('GET', '/api/fuels', () => ({ fuels: FUELS, vehicle_fuels: VEHICLE_FUELS }));
 route('GET', '/api/fuel', ({ user, query }) => listers.fuel(user, query));
 route('POST', '/api/fuel', ({ user, body }) => {
   const v = getVehicle(body.vehicle_id, user);
-  const qty = num(body.qty_kg, 'Quantity (kg)');
+  const type = body.fuel_type ? (FUELS[body.fuel_type] ? body.fuel_type : bad('Choose CNG, Petrol, Diesel or EV')) : primaryFuel(v.fuel_type);
+  const unit = FUELS[type].unit;
+  const qty = num(body.quantity ?? body.qty_kg, `Quantity (${unit})`);
   if (qty <= 0) bad('Quantity must be more than 0');
-  const price = num(body.price_per_kg, 'Price per kg', { required: false });
+  const price = num(body.price_per_unit ?? body.price_per_kg, `Price per ${unit}`, { required: false });
   const amount = num(body.amount, 'Amount', { required: false }) ?? (price !== null ? +(price * qty).toFixed(2) : null);
-  if (amount === null) bad('Enter the total amount or the price per kg');
-  const r = run(`INSERT INTO fuel_logs (driver_id,vehicle_id,date,odometer,qty_kg,price_per_kg,amount,station,photo,notes)
-                 VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    user.id, v.id, isoDate(body.date), num(body.odometer, 'Odometer'), qty,
-    price ?? +(amount / qty).toFixed(2), amount, str(body.station, 'Station', { max: 200 }),
+  if (amount === null) bad(`Enter the total amount or the price per ${unit}`);
+  let b1 = null, b2 = null;
+  if (type === 'EV') {
+    b1 = num(body.battery_start_pct, 'Battery % before', { required: false });
+    b2 = num(body.battery_end_pct, 'Battery % after', { required: false });
+    if ((b1 !== null && b1 > 100) || (b2 !== null && b2 > 100)) bad('Battery % must be between 0 and 100');
+    if (b1 !== null && b2 !== null && b2 < b1) bad('Battery % after charging must be higher than before');
+  }
+  const r = run(`INSERT INTO fuel_logs (driver_id,vehicle_id,date,odometer,fuel_type,qty_kg,price_per_kg,amount,station,battery_start_pct,battery_end_pct,photo,notes)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    user.id, v.id, isoDate(body.date), num(body.odometer, 'Odometer'), type, qty,
+    price ?? +(amount / qty).toFixed(2), amount, str(body.station, 'Station', { max: 200 }), b1, b2,
     saveImage(body.photo), str(body.notes, 'Notes'));
   return { id: Number(r.lastInsertRowid) };
 });
 
 // --- oil change / service
-const SERVICE_TYPES = ['oil_change', 'general_service', 'tyre', 'brake', 'battery', 'cng_kit', 'other'];
+const SERVICE_TYPES = ['oil_change', 'general_service', 'tyre', 'brake', 'battery', 'cng_kit', 'ev_battery', 'other'];
 route('GET', '/api/services', ({ user, query }) => listers.services(user, query));
 route('POST', '/api/services', ({ user, body }) => {
   const v = getVehicle(body.vehicle_id, user);
   const type = SERVICE_TYPES.includes(body.type) ? body.type : bad('Choose a service type');
+  if (type === 'oil_change' && !usesOil(v.fuel_type)) bad('Electric vehicles do not need oil changes – choose another service type');
   const odo = num(body.odometer, 'Odometer');
   let next = num(body.next_due_km, 'Next due km', { required: false });
   if (type === 'oil_change' && !next) next = odo + v.oil_interval_km;
@@ -545,7 +594,13 @@ route('GET', '/api/dashboard', ({ user }) => {
   const d = today();
   const month = d.slice(0, 7);
   const kmSum = (cond) => get(`SELECT COALESCE(SUM(end_km-start_km),0) AS km FROM trips WHERE end_km IS NOT NULL ${dw} AND ${cond}`, p).km;
-  const fuelSum = (cond) => get(`SELECT COALESCE(SUM(qty_kg),0) AS kg, COALESCE(SUM(amount),0) AS amount FROM fuel_logs WHERE 1=1 ${dw} AND ${cond}`, p);
+  /** Totals per fuel type: [{ fuel_type, unit, quantity, amount }] plus overall amount. */
+  const fuelSum = (cond, params = p, extra = dw) => {
+    const by = all(`SELECT fuel_type, COALESCE(SUM(qty_kg),0) AS quantity, COALESCE(SUM(amount),0) AS amount
+                    FROM fuel_logs WHERE 1=1 ${extra} AND ${cond} GROUP BY fuel_type ORDER BY fuel_type`, params)
+      .map((r) => ({ ...r, unit: FUELS[r.fuel_type]?.unit || '' }));
+    return { by_type: by, amount: by.reduce((s, r) => s + r.amount, 0) };
+  };
   const monthFuel = fuelSum(`substr(date,1,7)='${month}'`);
   const monthKm = kmSum(`substr(date,1,7)='${month}'`);
 
@@ -553,17 +608,18 @@ route('GET', '/api/dashboard', ({ user }) => {
                         WHERE v.active=1 ORDER BY v.reg_no`).map((v) => {
     const s = oilStatus(v);
     const mk = get(`SELECT COALESCE(SUM(end_km-start_km),0) AS km FROM trips WHERE vehicle_id=? AND end_km IS NOT NULL AND substr(date,1,7)=?`, v.id, month).km;
-    const mf = get(`SELECT COALESCE(SUM(qty_kg),0) AS kg, COALESCE(SUM(amount),0) AS amount FROM fuel_logs WHERE vehicle_id=? AND substr(date,1,7)=?`, v.id, month);
-    // Mileage from fill-to-fill odometer readings (more accurate than trip km)
-    const fills = all(`SELECT odometer, qty_kg FROM fuel_logs WHERE vehicle_id=? ORDER BY odometer`, v.id);
+    const mf = fuelSum(`vehicle_id=:v AND substr(date,1,7)=:m`, { v: v.id, m: month }, '');
+    // Mileage from fill-to-fill odometer readings of the vehicle's main fuel (km/kg, km/L or km/kWh)
+    const main = primaryFuel(v.fuel_type);
+    const fills = all(`SELECT odometer, qty_kg FROM fuel_logs WHERE vehicle_id=? AND fuel_type=? ORDER BY odometer`, v.id, main);
     let eff = null;
     if (fills.length >= 2) {
-      const kgUsed = fills.slice(1).reduce((s, f) => s + f.qty_kg, 0);
+      const used = fills.slice(1).reduce((t, f) => t + f.qty_kg, 0);
       const dist = fills[fills.length - 1].odometer - fills[0].odometer;
-      if (kgUsed > 0 && dist > 0) eff = +(dist / kgUsed).toFixed(2);
+      if (used > 0 && dist > 0) eff = +(dist / used).toFixed(2);
     }
-    return { id: v.id, reg_no: v.reg_no, model: v.model, driver_name: v.driver_name, month_km: mk,
-      month_fuel_kg: mf.kg, month_fuel_amount: mf.amount, km_per_kg: eff, ...s };
+    return { id: v.id, reg_no: v.reg_no, model: v.model, fuel_type: v.fuel_type, driver_name: v.driver_name, month_km: mk,
+      month_fuel: mf.by_type, month_fuel_amount: mf.amount, mileage: eff, mileage_unit: `km/${FUELS[main].unit}`, ...s };
   });
 
   const daily = all(`SELECT date, SUM(end_km-start_km) AS km FROM trips WHERE end_km IS NOT NULL ${dw}
@@ -572,12 +628,12 @@ route('GET', '/api/dashboard', ({ user }) => {
   return {
     today: { km: kmSum(`date='${d}'`), fuel: fuelSum(`date='${d}'`),
       trips: get(`SELECT COUNT(*) AS n FROM trips WHERE date=:d ${dw}`, { ...p, d }).n },
-    month: { km: monthKm, fuel_kg: monthFuel.kg, fuel_amount: monthFuel.amount,
+    month: { km: monthKm, fuel: monthFuel.by_type, fuel_amount: monthFuel.amount,
       service_cost: get(`SELECT COALESCE(SUM(cost),0) AS c FROM services WHERE substr(date,1,7)='${month}' ${dw}`, p).c,
       accidents: get(`SELECT COUNT(*) AS n FROM accidents WHERE substr(occurred_at,1,7)='${month}' ${dw}`, p).n,
       cost_per_km: monthKm > 0 ? +(monthFuel.amount / monthKm).toFixed(2) : null },
     open_accidents: get(`SELECT COUNT(*) AS n FROM accidents WHERE status!='closed' ${dw}`, p).n,
-    vehicles: mine ? vehicles.filter((v) => v.oil_status !== 'ok' || all(`SELECT 1 FROM trips WHERE vehicle_id=? AND driver_id=? LIMIT 1`, v.id, user.id).length) : vehicles,
+    vehicles: mine ? vehicles.filter((v) => ['overdue', 'due_soon'].includes(v.oil_status) || all(`SELECT 1 FROM trips WHERE vehicle_id=? AND driver_id=? LIMIT 1`, v.id, user.id).length) : vehicles,
     daily,
     active_trips: all(`SELECT t.id, t.start_km, t.date, t.started_at, u.name AS driver_name, v.reg_no FROM trips t
                        ${JOIN_NAMES('t')} WHERE t.end_km IS NULL ${mine ? 'AND t.driver_id=:me' : ''} ORDER BY t.id DESC`, p),

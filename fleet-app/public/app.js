@@ -9,7 +9,19 @@ const money = (n) => (n === null || n === undefined ? '—' : '₹' + fmt(n, 2))
 const today = () => new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local time
 const nowLocal = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
 const SERVICE_LABEL = { oil_change: 'Oil change', general_service: 'General service', tyre: 'Tyre', brake: 'Brake',
-  battery: 'Battery', cng_kit: 'CNG kit', other: 'Other' };
+  battery: 'Battery (12V)', cng_kit: 'CNG kit', ev_battery: 'EV battery / charger', other: 'Other' };
+// Fuel types: unit, icon, colour of the badge and wording used on the Fuel page.
+const FUEL = {
+  CNG:    { unit: 'kg',  icon: '🟢', station: 'CNG station',      placeholder: 'e.g. IGL Sector 18',    noun: 'CNG fill' },
+  Petrol: { unit: 'L',   icon: '⛽', station: 'Petrol pump',      placeholder: 'e.g. Indian Oil, MG Road', noun: 'petrol fill' },
+  Diesel: { unit: 'L',   icon: '🛢', station: 'Diesel pump',      placeholder: 'e.g. HP, Ring Road',      noun: 'diesel fill' },
+  EV:     { unit: 'kWh', icon: '⚡', station: 'Charging station', placeholder: 'e.g. Tata Power, home',   noun: 'EV charge' },
+};
+const VEHICLE_FUELS = ['CNG', 'CNG + Petrol', 'Petrol', 'Diesel', 'EV', 'Petrol + EV (hybrid)'];
+const primaryFuel = (vf) => (vf === 'EV' ? 'EV' : Object.keys(FUEL).find((k) => String(vf || '').startsWith(k)) || 'CNG');
+const fuelBadge = (t) => `<span class="badge fuel-${esc(t)}">${FUEL[t]?.icon || ''} ${esc(t)}</span>`;
+/** "13 kg CNG · 20 L Petrol" from [{fuel_type, quantity, unit}] */
+const fuelList = (rows) => (rows || []).map((r) => `${fmt(r.quantity, 2)} ${esc(r.unit)} ${esc(r.fuel_type)}`).join('<br>') || '—';
 const STATUS_LABEL = { reported: 'Reported', in_review: 'In review', insurance_claimed: 'Insurance claimed', closed: 'Closed' };
 
 const state = { user: null, vehicles: [] };
@@ -142,11 +154,12 @@ const kmField = (name, label, extra = '') =>
    <small class="muted" data-hint="${name}"></small></label>`;
 async function refreshVehicles() { state.vehicles = await api('/api/vehicles'); }
 
-function filtersBar(id, { dates = true } = {}) {
+function filtersBar(id, { dates = true, extra = '' } = {}) {
   return `<form class="filters" id="${id}">
     ${state.user.role === 'admin' ? `<label><span>Driver</span><select name="driver"><option value="">All drivers</option>${
       (state.drivers || []).filter((d) => d.role === 'driver').map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></label>` : ''}
     <label><span>Vehicle</span>${vehicleSelect('vehicle', { includeAll: true })}</label>
+    ${extra}
     ${dates ? `<label><span>From</span><input type="date" name="from"></label><label><span>To</span><input type="date" name="to"></label>` : ''}
     <div class="row"><button type="submit">Filter</button><a class="btn" data-export>⬇ CSV</a></div>
   </form>`;
@@ -177,7 +190,7 @@ const pages = {};
 pages.dashboard = async (main) => {
   const d = await api('/api/dashboard');
   const isAdmin = state.user.role === 'admin';
-  const alerts = d.vehicles.filter((v) => v.oil_status !== 'ok');
+  const alerts = d.vehicles.filter((v) => v.oil_status === 'overdue' || v.oil_status === 'due_soon');
   const max = Math.max(1, ...d.daily.map((x) => x.km));
   main.innerHTML = `
     <h1>${isAdmin ? 'Fleet dashboard' : `Hello, ${esc(state.user.name)}`}</h1>
@@ -188,8 +201,9 @@ pages.dashboard = async (main) => {
     <div class="grid">
       <div class="stat"><div class="v">${fmt(d.today.km, 1)}</div><div class="l">km today</div></div>
       <div class="stat"><div class="v">${fmt(d.month.km, 1)}</div><div class="l">km this month</div></div>
-      <div class="stat"><div class="v">${fmt(d.month.fuel_kg, 2)} kg</div><div class="l">CNG this month</div></div>
-      <div class="stat"><div class="v">${money(d.month.fuel_amount)}</div><div class="l">CNG spend this month</div></div>
+      ${d.month.fuel.map((x) => `<div class="stat"><div class="v">${fmt(x.quantity, 2)} ${esc(x.unit)}</div>
+        <div class="l">${FUEL[x.fuel_type]?.icon || ''} ${esc(x.fuel_type)} this month · ${money(x.amount)}</div></div>`).join('')}
+      <div class="stat"><div class="v">${money(d.month.fuel_amount)}</div><div class="l">Fuel &amp; charging spend this month</div></div>
       <div class="stat"><div class="v">${d.month.cost_per_km !== null ? money(d.month.cost_per_km) : '—'}</div><div class="l">Fuel cost / km</div></div>
       <div class="stat"><div class="v">${money(d.month.service_cost)}</div><div class="l">Service spend this month</div></div>
       <div class="stat"><div class="v">${d.month.accidents}</div><div class="l">Accidents this month</div></div>
@@ -204,18 +218,19 @@ pages.dashboard = async (main) => {
       ${d.active_trips.map((t) => `<tr><td>${esc(t.reg_no)}</td><td>${esc(t.driver_name)}</td><td>${esc(t.started_at)} UTC</td><td>${fmt(t.start_km)}</td></tr>`).join('')}
       </table></div></div>` : ''}
     <div class="card"><h2>Vehicles</h2><div class="table-wrap"><table>
-      <tr><th>Vehicle</th><th>Driver</th><th>Odometer</th><th>Month km</th><th>Month CNG</th><th>Mileage</th><th>Oil change</th></tr>
-      ${d.vehicles.map((v) => `<tr><td><b>${esc(v.reg_no)}</b><br><small class="muted">${esc(v.model)}</small></td>
+      <tr><th>Vehicle</th><th>Driver</th><th>Odometer</th><th>Month km</th><th>Month fuel</th><th>Mileage</th><th>Oil change</th></tr>
+      ${d.vehicles.map((v) => `<tr><td><b>${esc(v.reg_no)}</b><br><small class="muted">${esc(v.model)}</small><br>${fuelBadge(primaryFuel(v.fuel_type))}</td>
         <td>${esc(v.driver_name || '—')}</td><td>${fmt(v.current_km)} km</td><td>${fmt(v.month_km, 1)}</td>
-        <td>${fmt(v.month_fuel_kg, 2)} kg<br><small class="muted">${money(v.month_fuel_amount)}</small></td>
-        <td>${v.km_per_kg ? fmt(v.km_per_kg, 2) + ' km/kg' : '—'}</td>
+        <td>${fuelList(v.month_fuel)}<br><small class="muted">${money(v.month_fuel_amount)}</small></td>
+        <td>${v.mileage ? fmt(v.mileage, 2) + ' ' + esc(v.mileage_unit) : '—'}</td>
         <td>${oilBadge(v)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No vehicles yet.</td></tr>'}
       </table></div></div>
     ${d.recent_accidents.length ? `<div class="card"><h2>Recent accidents</h2>${accidentTable(d.recent_accidents)}</div>` : ''}
-    ${!isAdmin ? `<div class="row"><a class="btn" href="#/trips">🚗 Daily km</a><a class="btn" href="#/fuel">⛽ CNG fill</a>
+    ${!isAdmin ? `<div class="row"><a class="btn" href="#/trips">🚗 Daily km</a><a class="btn" href="#/fuel">⛽ Fuel / charge</a>
       <a class="btn" href="#/services">🛢 Service</a><a class="btn" href="#/accidents">⚠️ Accident</a></div>` : ''}`;
 };
 const oilBadge = (v) => {
+  if (v.oil_status === 'na') return '<span class="badge">Not needed (EV)</span>';
   const cls = v.oil_status === 'overdue' ? 'danger' : v.oil_status === 'due_soon' ? 'warn' : 'ok';
   const txt = v.oil_status === 'overdue' ? `Overdue ${fmt(-v.oil_remaining_km)} km` : `${fmt(v.oil_remaining_km)} km left`;
   return `<span class="badge ${cls}">${txt}</span><br><small class="muted">due at ${fmt(v.oil_due_km)} km</small>`;
@@ -272,38 +287,75 @@ pages.trips = async (main) => {
   bindFilters($('#flt', main), 'trips', load);
 };
 
-// --- CNG fuel
+// --- fuel & charging (CNG / Petrol / Diesel / EV)
 pages.fuel = async (main) => {
   await refreshVehicles();
-  main.innerHTML = `<h1>CNG fueling</h1>
-    <div class="card"><h2>Add CNG fill</h2><form id="f"><div class="fields">
+  main.innerHTML = `<h1>Fuel &amp; charging</h1>
+    <div class="card"><h2 id="ftitle">Add fill</h2><form id="f"><div class="fields">
       <label><span>Vehicle *</span>${vehicleSelect()}</label>
+      <div class="full"><label><span>Fuel type *</span></label><div class="seg" role="radiogroup">
+        ${Object.keys(FUEL).map((k) => `<label><input type="radio" name="fuel_type" value="${k}"><span>${FUEL[k].icon} ${k}</span></label>`).join('')}
+      </div></div>
       <label><span>Date *</span><input type="date" name="date" value="${today()}" required></label>
-      ${kmField('odometer', 'Odometer at fill (km)')}
-      <label><span>Quantity (kg) *</span><input name="qty_kg" type="number" inputmode="decimal" step="0.01" min="0.01" required></label>
-      <label><span>Price per kg (₹)</span><input name="price_per_kg" type="number" inputmode="decimal" step="0.01" min="0"></label>
+      ${kmField('odometer', 'Odometer (km)')}
+      <label><span data-l="qty">Quantity *</span><input name="quantity" type="number" inputmode="decimal" step="0.01" min="0.01" required></label>
+      <label><span data-l="price">Price per unit (₹)</span><input name="price_per_unit" type="number" inputmode="decimal" step="0.01" min="0"></label>
       <label><span>Total amount (₹)</span><input name="amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="auto = qty × price"></label>
-      <label><span>CNG station</span><input name="station" placeholder="e.g. IGL Sector 18"></label>
+      <label><span data-l="station">Station</span><input name="station"></label>
+      <label data-ev><span>Battery % before</span><input name="battery_start_pct" type="number" inputmode="numeric" min="0" max="100"></label>
+      <label data-ev><span>Battery % after</span><input name="battery_end_pct" type="number" inputmode="numeric" min="0" max="100"></label>
       <label class="full"><span>Notes</span><textarea name="notes"></textarea></label>
       ${photoField('photo', 'Bill / meter photo')}
-    </div><div class="actions"><button class="primary" type="submit">Save CNG fill</button></div></form></div>
-    <div class="card"><h2>History</h2>${filtersBar('flt')}<div id="list"></div></div>`;
+    </div><div class="actions"><button class="primary" type="submit" id="fsave">Save</button></div></form></div>
+    <div class="card"><h2>History</h2>${filtersBar('flt', { extra: `<label><span>Fuel</span><select name="fuel_type"><option value="">All fuels</option>${
+      Object.keys(FUEL).map((k) => `<option>${k}</option>`).join('')}</select></label>` })}<div id="list"></div></div>`;
   const f = $('#f', main);
   bindPhotoPickers(f); bindOdometer(f);
-  const qty = $('[name=qty_kg]', f), price = $('[name=price_per_kg]', f), amt = $('[name=amount]', f);
+  const qty = $('[name=quantity]', f), price = $('[name=price_per_unit]', f), amt = $('[name=amount]', f);
   const calc = () => { if (qty.value && price.value && !amt.dataset.touched) amt.value = (qty.value * price.value).toFixed(2); };
   qty.oninput = calc; price.oninput = calc; amt.oninput = () => (amt.dataset.touched = amt.value ? '1' : '');
+  // Update labels/units for the chosen fuel
+  const applyFuel = () => {
+    const t = f.fuel_type.value || 'CNG', F = FUEL[t];
+    $('[data-l=qty]', f).textContent = `${t === 'EV' ? 'Energy charged' : 'Quantity'} (${F.unit}) *`;
+    $('[data-l=price]', f).textContent = `Price per ${F.unit} (₹)`;
+    $('[data-l=station]', f).textContent = F.station;
+    f.station.placeholder = F.placeholder;
+    $$('[data-ev]', f).forEach((el) => (el.style.display = t === 'EV' ? '' : 'none'));
+    $('#ftitle', main).textContent = `Add ${F.noun}`;
+    $('#fsave', main).textContent = `Save ${F.noun}`;
+  };
+  // Default the fuel type from the selected vehicle
+  const pickFromVehicle = () => {
+    const v = state.vehicles.find((x) => String(x.id) === f.vehicle_id.value);
+    const t = primaryFuel(v?.fuel_type);
+    const radio = $(`[name=fuel_type][value="${t}"]`, f);
+    if (radio) radio.checked = true;
+    applyFuel();
+  };
+  f.vehicle_id.addEventListener('change', pickFromVehicle);
+  $$('[name=fuel_type]', f).forEach((r) => (r.onchange = applyFuel));
+  pickFromVehicle();
   f.onsubmit = (e) => { e.preventDefault(); submitting(f, async () => {
     await api('/api/fuel', { method: 'POST', body: { ...formData(f), photo: f._photos.photo[0] } });
-    toast('CNG fill saved'); route();
+    toast(`${FUEL[f.fuel_type.value].noun[0].toUpperCase() + FUEL[f.fuel_type.value].noun.slice(1)} saved`); route();
   }); };
   const load = async (qs) => {
     const rows = await api('/api/fuel?' + qs);
-    const kg = rows.reduce((s, r) => s + r.qty_kg, 0), amount = rows.reduce((s, r) => s + r.amount, 0);
-    $('#list', main).innerHTML = `<p class="muted">${rows.length} fills · <b>${fmt(kg, 2)} kg</b> · <b>${money(amount)}</b></p><div class="table-wrap"><table>
-      <tr><th>Date</th><th>Vehicle</th>${state.user.role === 'admin' ? '<th>Driver</th>' : ''}<th>Odometer</th><th>Qty</th><th>₹/kg</th><th>Amount</th><th>Station</th><th>Photo</th><th></th></tr>
-      ${rows.map((r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.reg_no)}</td>${state.user.role === 'admin' ? `<td>${esc(r.driver_name)}</td>` : ''}
-        <td>${fmt(r.odometer)}</td><td>${fmt(r.qty_kg, 2)} kg</td><td>${fmt(r.price_per_kg, 2)}</td><td><b>${money(r.amount)}</b></td>
+    const totals = {};
+    for (const r of rows) {
+      totals[r.fuel_type] ??= { fuel_type: r.fuel_type, unit: r.unit, quantity: 0 };
+      totals[r.fuel_type].quantity += r.quantity;
+    }
+    const amount = rows.reduce((s, r) => s + r.amount, 0);
+    $('#list', main).innerHTML = `<p class="muted">${rows.length} records · ${Object.values(totals).map((t) => `<b>${fmt(t.quantity, 2)} ${esc(t.unit)}</b> ${esc(t.fuel_type)}`).join(' · ') || '—'} · <b>${money(amount)}</b></p>
+      <div class="table-wrap"><table>
+      <tr><th>Date</th><th>Vehicle</th><th>Fuel</th>${state.user.role === 'admin' ? '<th>Driver</th>' : ''}<th>Odometer</th><th>Qty</th><th>Rate</th><th>Amount</th><th>Station</th><th>Photo</th><th></th></tr>
+      ${rows.map((r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.reg_no)}</td><td>${fuelBadge(r.fuel_type)}</td>
+        ${state.user.role === 'admin' ? `<td>${esc(r.driver_name)}</td>` : ''}
+        <td>${fmt(r.odometer)}</td><td>${fmt(r.quantity, 2)} ${esc(r.unit)}${r.fuel_type === 'EV' && r.battery_end_pct !== null
+          ? `<br><small class="muted">🔋 ${r.battery_start_pct ?? '?'}% → ${r.battery_end_pct}%</small>` : ''}</td>
+        <td>₹${fmt(r.price_per_unit, 2)}/${esc(r.unit)}</td><td><b>${money(r.amount)}</b></td>
         <td>${esc(r.station)}</td><td>${thumb(r.photo)}</td><td>${delBtn('fuel', r.id)}</td></tr>`).join('')}
       </table></div>`;
     bindDeletes($('#list', main), () => load(qs));
@@ -317,7 +369,8 @@ pages.services = async (main) => {
   main.innerHTML = `<h1>Oil change &amp; service</h1>
     <div class="card"><h2>Add service record</h2><form id="f"><div class="fields">
       <label><span>Vehicle *</span>${vehicleSelect()}</label>
-      <label><span>Type *</span><select name="type" required>${Object.entries(SERVICE_LABEL).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></label>
+      <label><span>Type *</span><select name="type" required>${Object.entries(SERVICE_LABEL).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
+        <small class="muted" id="evnote"></small></label>
       <label><span>Date *</span><input type="date" name="date" value="${today()}" required></label>
       ${kmField('odometer', 'Odometer at service (km)')}
       <label><span>Cost (₹)</span><input name="cost" type="number" inputmode="decimal" step="0.01" min="0"></label>
@@ -338,10 +391,16 @@ pages.services = async (main) => {
   const hint = () => {
     const v = state.vehicles.find((x) => String(x.id) === $('[name=vehicle_id]', f).value);
     const odo = Number($('[name=odometer]', f).value);
-    $('#nexthint', f).textContent = $('[name=type]', f).value === 'oil_change' && v && odo
+    // Electric vehicles have no engine oil
+    const isEV = v?.fuel_type === 'EV';
+    const oilOpt = $('[name=type] option[value=oil_change]', f);
+    oilOpt.disabled = isEV;
+    if (isEV && f.type.value === 'oil_change') f.type.value = 'general_service';
+    $('#evnote', f).textContent = isEV ? 'Electric vehicle – no oil change needed' : '';
+    $('#nexthint', f).textContent = f.type.value === 'oil_change' && v && odo
       ? `Leave blank for default: ${fmt(odo + v.oil_interval_km)} km (every ${fmt(v.oil_interval_km)} km)` : '';
   };
-  f.oninput = hint; f.onchange = hint;
+  f.oninput = hint; f.onchange = hint; hint();
   f.onsubmit = (e) => { e.preventDefault(); submitting(f, async () => {
     await api('/api/services', { method: 'POST', body: { ...formData(f), photo: f._photos.photo[0] } });
     toast('Service record saved'); route();
@@ -446,14 +505,14 @@ pages.vehicles = async (main) => {
     <div class="card"><h2>Add vehicle</h2><form id="f"><div class="fields">
       <label><span>Registration no. *</span><input name="reg_no" required placeholder="DL01AB1234" style="text-transform:uppercase"></label>
       <label><span>Make / model</span><input name="model" placeholder="Maruti WagonR CNG"></label>
-      <label><span>Fuel</span><select name="fuel_type"><option>CNG</option><option>CNG + Petrol</option><option>Petrol</option><option>Diesel</option><option>EV</option></select></label>
+      <label><span>Fuel</span><select name="fuel_type">${VEHICLE_FUELS.map((x) => `<option>${x}</option>`).join('')}</select></label>
       <label><span>Current odometer (km)</span><input name="initial_km" type="number" min="0" step="0.1" value="0"></label>
       <label><span>Oil change every (km)</span><input name="oil_interval_km" type="number" min="100" value="5000"></label>
       <label><span>Assigned driver</span><select name="assigned_driver_id">${driverOpts()}</select></label>
     </div><div class="actions"><button class="primary" type="submit">Add vehicle</button></div></form></div>
     <div class="card"><h2>Fleet</h2><div class="table-wrap"><table>
       <tr><th>Reg. no.</th><th>Model</th><th>Fuel</th><th>Odometer</th><th>Oil interval</th><th>Driver</th><th>Oil change</th><th>Active</th></tr>
-      ${state.vehicles.map((v) => `<tr data-v="${v.id}"><td><b>${esc(v.reg_no)}</b></td><td>${esc(v.model)}</td><td>${esc(v.fuel_type)}</td>
+      ${state.vehicles.map((v) => `<tr data-v="${v.id}"><td><b>${esc(v.reg_no)}</b></td><td>${esc(v.model)}</td><td><select data-k="fuel_type">${VEHICLE_FUELS.map((x) => `<option ${x === v.fuel_type ? 'selected' : ''}>${x}</option>`).join('')}</select></td>
         <td>${fmt(v.current_km)} km</td>
         <td><input type="number" min="100" value="${v.oil_interval_km}" data-k="oil_interval_km" style="width:100px"></td>
         <td><select data-k="assigned_driver_id">${driverOpts(v.assigned_driver_id)}</select></td>
@@ -523,7 +582,7 @@ pages.profile = async (main) => {
 
 // ------------------------------------------------------------------ shell & routing
 const NAV = [
-  ['dashboard', '📊', 'Dashboard'], ['trips', '🚗', 'Daily km'], ['fuel', '⛽', 'CNG'],
+  ['dashboard', '📊', 'Dashboard'], ['trips', '🚗', 'Daily km'], ['fuel', '⛽', 'Fuel'],
   ['services', '🛢', 'Service'], ['accidents', '⚠️', 'Accidents'],
   ['vehicles', '🚐', 'Vehicles', 'admin'], ['drivers', '👤', 'Drivers', 'admin'], ['profile', '⚙️', 'Profile'],
 ];

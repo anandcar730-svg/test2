@@ -106,3 +106,19 @@ th { color: var(--muted); font-weight: 600; font-size: .8rem; text-transform: up
 dialog { border: 0; border-radius: var(--radius); padding: 18px; width: min(560px, 94vw); background: var(--card); color: var(--text); }
 dialog::backdrop { background: rgba(0,0,0,.5); }
 .filters { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); align-items: end; margin-bottom: 12px; }
+
+/* fuel type segmented buttons & badges */
+.seg { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.seg label { color: var(--text); }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg span { display: inline-block; padding: 9px 14px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer;
+  background: var(--bg); font-weight: 500; min-width: 84px; text-align: center; }
+.seg input:checked + span { background: var(--brand); color: #fff; border-color: var(--brand); }
+.seg input:focus-visible + span { outline: 2px solid var(--brand-2); }
+.badge.fuel-CNG { background: color-mix(in srgb, #16a34a 16%, transparent); color: #15803d; }
+.badge.fuel-Petrol { background: color-mix(in srgb, #ea580c 16%, transparent); color: #c2410c; }
+.badge.fuel-Diesel { background: color-mix(in srgb, #64748b 20%, transparent); color: #475569; }
+.badge.fuel-EV { background: color-mix(in srgb, #2563eb 16%, transparent); color: #1d4ed8; }
+@media (prefers-color-scheme: dark) {
+  .badge.fuel-CNG { color: #4ade80; } .badge.fuel-Petrol { color: #fb923c; } .badge.fuel-Diesel { color: #cbd5e1; } .badge.fuel-EV { color: #93c5fd; }
+}

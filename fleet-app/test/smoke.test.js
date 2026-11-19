@@ -73,14 +73,43 @@ const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJA
   // Dashboard
   const dash = await admin('/api/dashboard');
   assert.equal(dash.data.today.km, 180);
-  assert.equal(dash.data.month.fuel_kg, 13);
+  assert.deepEqual(dash.data.month.fuel.map((x) => [x.fuel_type, x.quantity, x.unit]), [['CNG', 13, 'kg']]);
   assert.equal(dash.data.month.fuel_amount, 988);
   const dv = dash.data.vehicles[0];
   assert.equal(dv.current_km, 10180);
   assert.equal(dv.oil_due_km, 15180);
-  assert.equal(dv.km_per_kg, 26); // 130 km / 5 kg
+  assert.equal(dv.mileage, 26); // 130 km / 5 kg
+  assert.equal(dv.mileage_unit, 'km/kg');
   const csv = await admin('/api/export/fuel.csv');
   assert.match(csv.data, /DL01AB1234/);
+
+  // Petrol, Diesel and EV vehicles
+  const pv = await admin('/api/vehicles', 'POST', { reg_no: 'KA01P1', fuel_type: 'Petrol', initial_km: 500 });
+  const ev = await admin('/api/vehicles', 'POST', { reg_no: 'KA01E1', fuel_type: 'EV', initial_km: 100 });
+  const dv2 = await admin('/api/vehicles', 'POST', { reg_no: 'KA01D1', fuel_type: 'Diesel', initial_km: 0 });
+  assert.equal((await admin('/api/vehicles', 'POST', { reg_no: 'X1', fuel_type: 'Hydrogen' })).status, 400);
+  assert.equal((await driver('/api/fuel', 'POST', { vehicle_id: pv.data.id, date, odometer: 500, quantity: 20, price_per_unit: 102 })).data.id > 0, true);
+  assert.equal((await driver('/api/fuel', 'POST', { vehicle_id: pv.data.id, date, odometer: 800, quantity: 15, price_per_unit: 102 })).status, 200);
+  assert.equal((await driver('/api/fuel', 'POST', { vehicle_id: dv2.data.id, date, odometer: 50, quantity: 30, amount: 2700 })).status, 200);
+  assert.equal((await driver('/api/fuel', 'POST', { vehicle_id: ev.data.id, date, odometer: 100, quantity: 30, price_per_unit: 12, battery_start_pct: 20, battery_end_pct: 90 })).status, 200);
+  assert.equal((await driver('/api/fuel', 'POST', { vehicle_id: ev.data.id, date, odometer: 340, quantity: 32, amount: 0, station: 'Home' })).status, 200);
+  assert.equal((await driver('/api/fuel', 'POST', { vehicle_id: ev.data.id, date, odometer: 340, quantity: 5, battery_start_pct: 90, battery_end_pct: 20, amount: 1 })).status, 400, 'battery % must rise');
+  assert.equal((await driver('/api/fuel', 'POST', { vehicle_id: vid, fuel_type: 'Petrol', date, odometer: 10190, quantity: 2, amount: 204 })).status, 200, 'dual-fuel: explicit type');
+  assert.equal((await driver('/api/services', 'POST', { vehicle_id: ev.data.id, date, odometer: 340, type: 'oil_change' })).status, 400, 'no oil change for EV');
+  const fl = await admin('/api/fuel?fuel_type=EV');
+  assert.equal(fl.data.length, 2);
+  assert.equal(fl.data[0].unit, 'kWh');
+  assert.ok(fl.data.some((r) => r.battery_end_pct === 90));
+  const d2 = (await admin('/api/dashboard')).data;
+  const byType = Object.fromEntries(d2.month.fuel.map((x) => [x.fuel_type, x]));
+  assert.equal(byType.Petrol.quantity, 37); assert.equal(byType.Petrol.unit, 'L');
+  assert.equal(byType.Diesel.quantity, 30); assert.equal(byType.EV.quantity, 62); assert.equal(byType.EV.unit, 'kWh');
+  const vEv = d2.vehicles.find((x) => x.reg_no === 'KA01E1'), vP = d2.vehicles.find((x) => x.reg_no === 'KA01P1');
+  assert.equal(vEv.oil_status, 'na');
+  assert.equal(vEv.mileage, 7.5); assert.equal(vEv.mileage_unit, 'km/kWh'); // 240 km / 32 kWh
+  assert.equal(vP.mileage, 20); assert.equal(vP.mileage_unit, 'km/L');     // 300 km / 15 L
+  assert.equal(d2.vehicles.find((x) => x.reg_no === 'DL01AB1234').mileage, 26, 'dual-fuel mileage uses CNG only');
+  assert.match((await admin('/api/export/fuel.csv')).data, /fuel_type/);
 
   // Driver sees only own data
   const other = await admin('/api/drivers', 'POST', { name: 'Other', username: 'other', password: 'other123' });
