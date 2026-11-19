@@ -412,7 +412,8 @@ pages.vehicle = async (main, id) => {
   const v = d.vehicle, admin = state.user.role === 'admin';
   const missingOdo = d.fuel.filter((f) => f.odometer === null).length;
   main.innerHTML = `
-    <div class="row"><a class="btn small" href="#/${admin ? 'vehicles' : 'dashboard'}">← Back</a></div>
+    <div class="row"><a class="btn small" href="#/${admin ? 'vehicles' : 'dashboard'}">← Back</a>
+      ${admin ? `<a class="btn small" href="#/vehicle-edit/${v.id}">✏️ Edit details</a>` : ''}</div>
     <h1 style="margin-top:12px">${esc(v.reg_no)} ${fuelBadge(v.main_fuel)} ${v.active ? '' : '<span class="badge">inactive</span>'}</h1>
     <p class="muted">${esc(v.model || '')}${v.model ? ' · ' : ''}${esc(v.fuel_type)} · Driver: <b>${esc(v.driver_name || '—')}</b>
       ${v.driver_phone ? ` · <a href="tel:${esc(v.driver_phone)}">📞 ${esc(v.driver_phone)}</a>` : ''}
@@ -430,11 +431,13 @@ pages.vehicle = async (main, id) => {
       <div class="stat"><div class="v">${money(d.month_service_cost)}</div><div class="l">Service this month</div></div>
       <div class="stat"><div class="v" style="font-size:1rem">${oilBadge(v)}</div><div class="l">Oil change</div></div>
     </div>
+    ${regCard(d.documents, admin, v.id)}
     <div class="card"><h2>All time</h2><p>${fmt(d.totals.km, 1)} km driven · ${money(d.totals.fuel_amount)} fuel · ${money(d.totals.service_cost)} service · ${d.totals.accidents} accident(s)</p></div>
     <div class="card"><h2>📄 Documents</h2>
       <div class="grid" style="margin:0">${DOCS.map(([k, l]) => `<div class="stat"><div class="l">${l}</div><div style="margin-top:6px">${docCell(d.documents?.docs?.[k])}</div>
         ${k === 'insurance' && d.documents?.insurance_company ? `<small class="muted" style="overflow-wrap:anywhere">${esc(d.documents.insurance_company)}${d.documents.insurance_policy ? ' · ' + esc(d.documents.insurance_policy) : ''}</small>` : ''}
-        ${k === 'pucc' && d.documents?.pucc_number ? `<small class="muted">No. ${esc(d.documents.pucc_number)}</small>` : ''}</div>`).join('')}</div>
+        ${k === 'pucc' && d.documents?.pucc_number ? `<small class="muted">No. ${esc(d.documents.pucc_number)}</small>` : ''}
+        ${d.documents?.[`${k}_file`] ? `<div style="margin-top:6px">${fileLink(d.documents[`${k}_file`])}</div>` : ''}</div>`).join('')}</div>
       <p class="muted" style="margin-bottom:0">${d.documents?.fetched_at ? `Updated online ${new Date(d.documents.fetched_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}`
         : d.documents?.source === 'manual' ? 'Entered manually' : 'No document details yet'}${admin ? ' · <a href="#/documents">Manage</a>' : ''}</p></div>
     <div class="card"><h2>Fuel &amp; charging <small class="muted">(last 30)</small></h2><div class="table-wrap" id="vfuel"><table>
@@ -458,6 +461,139 @@ pages.vehicle = async (main, id) => {
     </table></div></div>
     <div class="card"><h2>Accidents</h2>${d.accidents.length ? accidentTable(d.accidents) : '<p class="muted">No accidents. 👍</p>'}</div>`;
   bindOdoButtons(main, () => route());
+};
+
+// Scanned papers: photo thumbnail or PDF link
+const fileLink = (f) => (!f ? '' : /\.pdf$/i.test(f)
+  ? `<a class="btn small" href="/uploads/${encodeURIComponent(f)}" target="_blank" rel="noopener">📄 Open PDF</a>` : thumb(f));
+const REG_FIELDS = [
+  ['owner_name', 'Owner name'], ['maker_model', 'Make / model (as on RC)'], ['vehicle_class', 'Vehicle class', 'e.g. MOTOR CAR (LMV)'],
+  ['registration_date', 'Registration date', '', 'date'], ['registered_at', 'Registered at (RTO)', 'e.g. CHENNAI (SOUTH) RTO'],
+  ['chassis_no', 'Chassis number'], ['engine_no', 'Engine number'], ['manufacture', 'Manufactured (month/year)', 'MM/YYYY'],
+  ['color', 'Colour'], ['seating', 'Seating capacity', '', 'number'], ['financer', 'Financer / hypothecation'], ['rc_status', 'RC status', 'ACTIVE'],
+];
+function regCard(docs, admin, id) {
+  const rows = REG_FIELDS.filter(([k]) => docs?.[k]).map(([k, l]) => `<tr><th style="width:40%">${esc(l)}</th><td>${
+    k === 'registration_date' ? niceDate(docs[k]) : esc(docs[k])}</td></tr>`).join('');
+  if (!rows && !docs?.rc_file && !docs?.notes) {
+    return admin ? `<div class="card"><h2>🪪 Registration details</h2><p class="muted">Not filled in yet. <a href="#/vehicle-edit/${id}">Add details</a></p></div>` : '';
+  }
+  return `<div class="card"><h2>🪪 Registration details</h2>${rows ? `<div class="table-wrap"><table>${rows}</table></div>` : ''}
+    ${docs.rc_file ? `<p><b>RC copy:</b> ${fileLink(docs.rc_file)}</p>` : ''}${docs.notes ? `<p class="muted">📝 ${esc(docs.notes)}</p>` : ''}</div>`;
+}
+
+/** File picker for a scanned paper (photo or PDF). Keeps the choice in form._files[name] (data URL, or null = remove). */
+function paperField(name, label, current) {
+  return `<div class="paper" data-paper="${name}"><span class="muted" style="font-size:.85rem">${esc(label)}</span>
+    <div class="row" style="margin-top:4px"><span data-cur>${current ? fileLink(current) : '<small class="muted">no file</small>'}</span>
+      <label class="btn small">📎 ${current ? 'Replace' : 'Add'} photo / PDF<input type="file" accept="image/*,application/pdf" hidden></label>
+      ${current ? '<button type="button" class="small danger" data-rm>Remove</button>' : ''}</div></div>`;
+}
+function bindPaperFields(form) {
+  form._files = {};
+  for (const box of $$('[data-paper]', form)) {
+    const name = box.dataset.paper, cur = $('[data-cur]', box);
+    $('input[type=file]', box).onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        if (file.type === 'application/pdf') {
+          if (file.size > 8 * 1024 * 1024) throw new Error('PDF must be under 8 MB');
+          form._files[name] = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+          cur.innerHTML = `<small>📄 ${esc(file.name)} <span class="badge warn">not saved yet</span></small>`;
+        } else {
+          form._files[name] = await compressImage(file, 2000, 0.85);
+          cur.innerHTML = `<img class="thumb" src="${form._files[name]}" alt=""> <span class="badge warn">not saved yet</span>`;
+        }
+      } catch (err) { toast(err.message, true); }
+    };
+    const rm = $('[data-rm]', box);
+    if (rm) rm.onclick = () => { form._files[name] = null; cur.innerHTML = '<small class="muted">will be removed when you save</small>'; rm.remove(); };
+  }
+}
+
+// --- edit everything about one vehicle by hand (admin)
+pages['vehicle-edit'] = async (main, id) => {
+  const d = await api(`/api/vehicles/${encodeURIComponent(id)}/summary`);
+  const v = d.vehicle, doc = d.documents || {};
+  const drivers = (state.drivers || []).filter((x) => x.role === 'driver' && (x.active || x.id === v.assigned_driver_id));
+  const val = (k) => esc(doc[k] ?? '');
+  const lifetimeTax = (doc.tax_upto || '').startsWith('9999');
+  const field = ([k, l, ph = '', type = 'text']) => `<label><span>${esc(l)}</span><input name="${k}" type="${type}" value="${val(k)}" placeholder="${esc(ph)}"${type === 'number' ? ' min="1" max="100"' : ''}></label>`;
+  main.innerHTML = `
+    <div class="row"><a class="btn small" href="#/vehicle/${v.id}">← Back to ${esc(v.reg_no)}</a></div>
+    <h1 style="margin-top:12px">✏️ ${esc(v.reg_no)} – vehicle details</h1>
+    <p class="muted">Fill in what you have; everything is optional. ${doc.fetched_at ? 'Online updates fill in the same fields – typed values are kept where the lookup has nothing.' : ''}</p>
+    <form id="vf">
+      <div class="card"><h2>🚐 Basic</h2><div class="fields">
+        <label><span>Registration no.</span><input value="${esc(v.reg_no)}" disabled></label>
+        <label><span>Make / model</span><input name="model" value="${esc(v.model || '')}"></label>
+        <label><span>Fuel</span><select name="fuel_type">${VEHICLE_FUELS.map((x) => `<option ${x === v.fuel_type ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+        <label><span>Starting odometer (km)</span><input name="initial_km" type="number" min="0" step="0.1" value="${v.initial_km}">
+          <small class="muted">Can only be changed before any km, fuel or service is recorded.</small></label>
+        <label><span>Oil change every (km)</span><input name="oil_interval_km" type="number" min="100" value="${v.oil_interval_km}"></label>
+        <label><span>Assigned driver</span><select name="assigned_driver_id"><option value="">— none —</option>${drivers.map((x) =>
+          `<option value="${x.id}" ${x.id === v.assigned_driver_id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
+        <label class="check"><input type="checkbox" name="active" ${v.active ? 'checked' : ''}> Active (in use)</label>
+      </div></div>
+
+      <div class="card"><h2>🪪 Registration (RC)</h2><div class="fields">
+        ${REG_FIELDS.map(field).join('')}
+        <div class="full">${paperField('rc_file', 'RC copy', doc.rc_file)}</div>
+      </div></div>
+
+      <div class="card"><h2>🛡 Insurance</h2><div class="fields">
+        <label><span>Insurance company</span><input name="insurance_company" value="${val('insurance_company')}"></label>
+        <label><span>Policy number</span><input name="insurance_policy" value="${val('insurance_policy')}"></label>
+        <label><span>Valid till</span><input name="insurance_upto" type="date" value="${val('insurance_upto')}"></label>
+        <div class="full">${paperField('insurance_file', 'Insurance policy copy', doc.insurance_file)}</div>
+      </div></div>
+
+      <div class="card"><h2>💨 Pollution (PUC)</h2><div class="fields">
+        <label><span>PUC certificate number</span><input name="pucc_number" value="${val('pucc_number')}"></label>
+        <label><span>Valid till</span><input name="pucc_upto" type="date" value="${val('pucc_upto')}"></label>
+        <div class="full">${paperField('pucc_file', 'PUC certificate', doc.pucc_file)}</div>
+      </div></div>
+
+      <div class="card"><h2>✅ Fitness</h2><div class="fields">
+        <label><span>Fitness valid till</span><input name="fitness_upto" type="date" value="${val('fitness_upto')}">
+          <small class="muted">Private cars: usually 15 years from registration. Commercial vehicles: renewed every 1–2 years.</small></label>
+        <div class="full">${paperField('fitness_file', 'Fitness certificate', doc.fitness_file)}</div>
+      </div></div>
+
+      <div class="card"><h2>🧾 Road tax</h2><div class="fields">
+        <label class="check"><input type="checkbox" name="tax_lifetime" ${lifetimeTax ? 'checked' : ''}> Lifetime tax (LTT) – no renewal</label>
+        <label data-taxdate><span>Tax valid till</span><input name="tax_upto" type="date" value="${lifetimeTax ? '' : val('tax_upto')}"></label>
+        <div class="full">${paperField('tax_file', 'Tax receipt', doc.tax_file)}</div>
+      </div></div>
+
+      <div class="card"><h2>📜 Permit <small class="muted">(commercial / taxi vehicles)</small></h2><div class="fields">
+        <label><span>Permit valid till</span><input name="permit_upto" type="date" value="${val('permit_upto')}"></label>
+        <div class="full">${paperField('permit_file', 'Permit copy', doc.permit_file)}</div>
+      </div></div>
+
+      <div class="card"><h2>📝 Notes</h2><textarea name="notes" placeholder="Anything else: second key location, battery warranty, GPS tracker…">${val('notes')}</textarea></div>
+      <div class="actions savebar"><button class="primary" type="submit">💾 Save all details</button>
+        <a class="btn" href="#/vehicle/${v.id}">Cancel</a></div>
+    </form>`;
+  const f = $('#vf', main);
+  bindPaperFields(f);
+  const taxToggle = () => ($('[data-taxdate]', f).style.display = f.tax_lifetime.checked ? 'none' : '');
+  f.tax_lifetime.onchange = taxToggle; taxToggle();
+  f.onsubmit = (e) => { e.preventDefault(); submitting(f, async () => {
+    const basic = { model: f.model.value, fuel_type: f.fuel_type.value, oil_interval_km: f.oil_interval_km.value,
+      assigned_driver_id: f.assigned_driver_id.value || null, active: f.active.checked };
+    if (Number(f.initial_km.value) !== v.initial_km) basic.initial_km = f.initial_km.value;
+    await api(`/api/vehicles/${v.id}`, { method: 'PUT', body: basic });
+    const body = { notes: f.notes.value, files: f._files };
+    for (const [k] of REG_FIELDS) body[k] = f[k].value;
+    for (const k of ['insurance_company', 'insurance_policy', 'insurance_upto', 'pucc_number', 'pucc_upto', 'fitness_upto', 'permit_upto']) body[k] = f[k].value;
+    body.tax_upto = f.tax_lifetime.checked ? 'LTT' : f.tax_upto.value;
+    await api(`/api/documents/${v.id}`, { method: 'PUT', body });
+    state.vehicles = [];
+    toast('Vehicle details saved');
+    location.hash = `#/vehicle/${v.id}`;
+  }); };
 };
 
 // --- vehicle documents (admin): insurance, pollution, fitness, tax, permit
@@ -520,17 +656,7 @@ pages.documents = async (main) => {
         </div></div>
       </div><div class="actions"><button class="primary" type="submit">Save settings</button>
         ${st.has_key ? '<button type="button" class="danger" id="rmkey">Remove key</button>' : ''}</div></form></details>
-    <dialog id="dlg"><form method="dialog" id="df"><h2 id="dtitle">Edit documents</h2>
-      <p class="muted" style="margin-top:0">Typed dates are kept until an online update brings newer ones.</p><div class="fields">
-      <label><span>Insurance valid till</span><input type="date" name="insurance_upto"></label>
-      <label><span>Insurance company</span><input name="insurance_company"></label>
-      <label><span>Policy number</span><input name="insurance_policy"></label>
-      <label><span>Pollution (PUC) valid till</span><input type="date" name="pucc_upto"></label>
-      <label><span>PUC number</span><input name="pucc_number"></label>
-      <label><span>Fitness valid till</span><input type="date" name="fitness_upto"></label>
-      <label><span>Road tax valid till</span><input type="date" name="tax_upto"></label>
-      <label><span>Permit valid till</span><input type="date" name="permit_upto"></label>
-    </div><div class="actions"><button class="primary" type="submit">Save</button><button type="button" id="dc">Cancel</button></div></form></dialog>`;
+`;
 
   const sf = $('#sf', main);
   const showCustom = () => {
@@ -566,17 +692,7 @@ pages.documents = async (main) => {
     if (r.ok) toast(`${r.reg_no} updated`); else toast(r.error, true);
     setTimeout(route, r.ok ? 0 : 2500);
   });
-  const dlg = $('#dlg', main), df = $('#df', main);
-  $('#dc', main).onclick = () => dlg.close();
-  for (const b of $$('[data-edit]', main)) b.onclick = () => {
-    const v = vehicles.find((x) => String(x.vehicle_id) === b.dataset.edit);
-    $('#dtitle', main).textContent = `Edit documents – ${v.reg_no}`;
-    for (const f of ['insurance_upto', 'insurance_company', 'insurance_policy', 'pucc_upto', 'pucc_number', 'fitness_upto', 'tax_upto', 'permit_upto']) df[f].value = v[f] || '';
-    df.onsubmit = async (e) => { e.preventDefault();
-      try { await api(`/api/documents/${v.vehicle_id}`, { method: 'PUT', body: formData(df) }); dlg.close(); toast('Saved'); route(); }
-      catch (err) { toast(err.message, true); } };
-    dlg.showModal();
-  };
+  for (const b of $$('[data-edit]', main)) b.onclick = () => (location.hash = `#/vehicle-edit/${b.dataset.edit}`);
 };
 
 // --- Loyverse POS (admin)
@@ -797,7 +913,8 @@ pages.vehicles = async (main) => {
     </div><div class="actions"><button class="primary" type="submit">Add vehicle</button></div></form></div>
     <div class="card"><h2>Fleet</h2><div class="table-wrap"><table>
       <tr><th>Reg. no.</th><th>Model</th><th>Fuel</th><th>Odometer</th><th>Oil interval</th><th>Driver</th><th>Oil change</th><th>Active</th></tr>
-      ${state.vehicles.map((v) => `<tr data-v="${v.id}"><td><b>${vlink(v.id, v.reg_no)}</b>${v.loyverse_customer_id ? '<br><small class="muted">🧾 in Loyverse</small>' : ''}</td><td>${esc(v.model)}</td><td><select data-k="fuel_type">${VEHICLE_FUELS.map((x) => `<option ${x === v.fuel_type ? 'selected' : ''}>${x}</option>`).join('')}</select></td>
+      ${state.vehicles.map((v) => `<tr data-v="${v.id}"><td><b>${vlink(v.id, v.reg_no)}</b>${v.loyverse_customer_id ? '<br><small class="muted">🧾 in Loyverse</small>' : ''}
+        <br><a class="small" href="#/vehicle-edit/${v.id}">✏️ Edit details</a></td><td>${esc(v.model)}</td><td><select data-k="fuel_type">${VEHICLE_FUELS.map((x) => `<option ${x === v.fuel_type ? 'selected' : ''}>${x}</option>`).join('')}</select></td>
         <td>${fmt(v.current_km)} km</td>
         <td><input type="number" min="100" value="${v.oil_interval_km}" data-k="oil_interval_km" style="width:100px"></td>
         <td><select data-k="assigned_driver_id">${driverOpts(v.assigned_driver_id)}</select></td>
@@ -805,7 +922,10 @@ pages.vehicles = async (main) => {
     </table></div></div>`;
   const f = $('#f', main);
   f.onsubmit = (e) => { e.preventDefault(); submitting(f, async () => {
-    await api('/api/vehicles', { method: 'POST', body: formData(f) }); toast('Vehicle added'); route();
+    const r = await api('/api/vehicles', { method: 'POST', body: formData(f) });
+    state.vehicles = [];
+    toast('Vehicle added – now fill in its details (optional)');
+    location.hash = `#/vehicle-edit/${r.id}`;
   }); };
   for (const input of $$('[data-k]', main)) input.onchange = async () => {
     const id = input.closest('tr').dataset.v;
@@ -902,9 +1022,9 @@ async function route() {
   if (!state.user) return;
   let [page, param] = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/');
   const nav = NAV.find((n) => n[0] === page);
-  const hidden = page === 'vehicle' && param; // pages without a menu entry
+  const hidden = param && (page === 'vehicle' || (page === 'vehicle-edit' && state.user.role === 'admin')); // pages without a menu entry
   if (!hidden && (!nav || (nav[3] && nav[3] !== state.user.role))) page = 'dashboard';
-  const activeNav = page === 'vehicle' ? (state.user.role === 'admin' ? 'vehicles' : 'dashboard') : page;
+  const activeNav = page === 'vehicle' || page === 'vehicle-edit' ? (state.user.role === 'admin' ? 'vehicles' : 'dashboard') : page;
   $$('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === activeNav));
   const main = $('#main');
   main.innerHTML = '<p class="muted">Loading…</p>';

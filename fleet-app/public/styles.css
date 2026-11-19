@@ -131,3 +131,6 @@ details.card > summary::-webkit-details-marker { display: none; }
 details.card > summary::before { content: '▸'; color: var(--muted); }
 details.card[open] > summary::before { content: '▾'; }
 details.card[open] > summary { margin-bottom: 10px; }
+.paper { padding: 10px 12px; border: 1px dashed var(--line); border-radius: 10px; }
+.savebar { position: sticky; bottom: 0; background: var(--bg); padding: 10px 0; z-index: 5; }
+@media (max-width: 760px) { .savebar { bottom: 64px; } }

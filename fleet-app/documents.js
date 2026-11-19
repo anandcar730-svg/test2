@@ -53,10 +53,23 @@ const FIELDS = {
   owner_name: ['owner_name', 'owner', 'registered_owner', 'rc_owner_name'],
   maker_model: ['maker_model', 'maker_description', 'vehicle_model', 'model', 'maker_desc', 'maker'],
   rc_status: ['rc_status', 'vehicle_status', 'rc_status_as_on'],
+  registration_date: ['registration_date', 'regn_dt', 'reg_date', 'registration_dt', 'date_of_registration'],
+  registered_at: ['registered_at', 'registered_place', 'rto_name', 'office_name'],
+  vehicle_class: ['vehicle_class', 'vehicle_class_desc', 'vh_class_desc', 'vehicle_category'],
+  chassis_no: ['chassis_no', 'chasi_no', 'chassis_number', 'chasis_no'],
+  engine_no: ['engine_no', 'eng_no', 'engine_number'],
+  manufacture: ['manu_month_yr', 'manufacturing_month_year', 'manufacture_date', 'mfg_date', 'manufactured_month_year'],
+  color: ['color', 'colour', 'vehicle_color', 'vehicle_colour'],
+  seating: ['seating_capacity', 'seat_cap', 'seating'],
+  financer: ['financer_details', 'financer', 'financier', 'financer_name', 'hypothecation'],
 };
 const nk = (k) => String(k).toLowerCase().replace(/[^a-z0-9]/g, '');
 const ALIASES = Object.fromEntries(Object.entries(FIELDS).map(([f, list]) => [f, list.map(nk)]));
 const LIFETIME = '9999-12-31'; // "LTT" – lifetime road tax
+const DATE_FIELDS = new Set(['insurance_upto', 'pucc_upto', 'fitness_upto', 'tax_upto', 'permit_upto', 'registration_date']);
+/** Scanned papers (photo or PDF), only ever set by hand – an online lookup never touches them. */
+const FILE_FIELDS = ['rc_file', 'insurance_file', 'pucc_file', 'fitness_file', 'tax_file', 'permit_file'];
+const isLifetime = (v) => /^(LTT|LIFE ?TIME|OTT)/i.test(String(v || '').trim());
 const SMART = { dueDays: DUE_DAYS, refreshDays: 30, failRetryDays: 7, staleExpiredDays: 60 };
 
 /** Find the first value for any alias anywhere in a nested JSON object (breadth-first). */
@@ -105,7 +118,7 @@ function extract(json, extra = {}) {
   const out = {};
   for (const f of Object.keys(FIELDS)) {
     const raw = pick(json, [...ALIASES[f], ...(extra[f] || []).map(nk)]);
-    out[f] = f.endsWith('_upto') ? (f === 'tax_upto' && /^(LTT|LIFE ?TIME|OTT)/i.test(raw || '') ? LIFETIME : parseDate(raw)) : raw;
+    out[f] = DATE_FIELDS.has(f) ? (f === 'tax_upto' && isLifetime(raw) ? LIFETIME : parseDate(raw)) : raw;
   }
   return out;
 }
@@ -146,6 +159,9 @@ module.exports = function createDocuments({ db, all, get, run, today }) {
       last_attempt_at TEXT
     );
   `);
+  // v1.4: registration details + scanned papers
+  const have = new Set(all(`PRAGMA table_info(vehicle_docs)`).map((c) => c.name));
+  for (const c of [...Object.keys(FIELDS), ...FILE_FIELDS, 'notes']) if (!have.has(c)) db.exec(`ALTER TABLE vehicle_docs ADD COLUMN ${c} TEXT`);
   const getSetting = (k) => get(`SELECT value FROM settings WHERE key=?`, k)?.value ?? null;
   const setSetting = (k, v) => (v === null || v === undefined
     ? run(`DELETE FROM settings WHERE key=?`, k)
@@ -330,19 +346,28 @@ module.exports = function createDocuments({ db, all, get, run, today }) {
     return out.sort((a, b) => a.days_left - b.days_left);
   }
 
-  function updateManual(vehicleId, body) {
+  /**
+   * Save details typed in by the admin. `files` maps FILE_FIELDS to a stored upload name (or null to remove);
+   * files are saved by the caller (server.js) so this module never writes to disk.
+   */
+  function updateManual(vehicleId, body, files = {}) {
     if (!get(`SELECT id FROM vehicles WHERE id=?`, vehicleId)) throw Object.assign(new Error('Vehicle not found'), { status: 404 });
     const fields = {};
     for (const f of Object.keys(FIELDS)) {
       if (!(f in body)) continue;
-      const v = body[f] === null ? '' : String(body[f]).trim().slice(0, 200);
-      if (f.endsWith('_upto') && v) {
-        const p = parseDate(v);
-        if (!p) throw Object.assign(new Error(`${f.replace('_upto', '')} date is not valid`), { status: 400 });
+      const v = body[f] === null || body[f] === undefined ? '' : String(body[f]).trim().slice(0, 200);
+      if (DATE_FIELDS.has(f) && v) {
+        const p = f === 'tax_upto' && isLifetime(v) ? LIFETIME : parseDate(v);
+        if (!p) throw Object.assign(new Error(`${f.replace('_upto', '').replace('_', ' ')} date is not valid`), { status: 400 });
         fields[f] = p;
       } else fields[f] = v || null;
     }
     saveDocs(vehicleId, fields, 'manual');
+    const extra = {};
+    for (const f of FILE_FIELDS) if (f in files) extra[f] = files[f];
+    if ('notes' in body) extra.notes = body.notes ? String(body.notes).trim().slice(0, 2000) : null;
+    const keys = Object.keys(extra);
+    if (keys.length) run(`UPDATE vehicle_docs SET ${keys.map((k) => `${k}=?`).join(',')} WHERE vehicle_id=?`, ...keys.map((k) => extra[k]), vehicleId);
     return forVehicle(vehicleId);
   }
 
@@ -399,3 +424,4 @@ module.exports.parseDate = parseDate;
 module.exports.extract = extract;
 module.exports.usageOf = usageOf;
 module.exports.LIFETIME = LIFETIME;
+module.exports.FILE_FIELDS = FILE_FIELDS;

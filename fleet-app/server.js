@@ -312,14 +312,15 @@ const isoDate = (v, field = 'date') => {
   return s;
 };
 
-/** Save a data-URL image (from the browser) and return the stored file name. */
-function saveImage(dataUrl) {
+/** Save a data-URL image (from the browser) and return the stored file name. `allowPdf` for scanned papers. */
+function saveImage(dataUrl, { allowPdf = false } = {}) {
   if (!dataUrl) return null;
-  const m = /^data:image\/(jpeg|jpg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl));
-  if (!m) bad('Photo must be a JPEG, PNG or WebP image');
-  const ext = m[1] === 'jpg' ? 'jpeg' : m[1];
-  const buf = Buffer.from(m[2], 'base64');
-  if (buf.length > 10 * 1024 * 1024) bad('Each photo must be under 10 MB');
+  const m = /^data:(?:image\/(jpeg|jpg|png|webp)|application\/(pdf));base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl));
+  if (!m || (m[2] && !allowPdf)) bad(allowPdf ? 'File must be a photo (JPEG/PNG/WebP) or a PDF' : 'Photo must be a JPEG, PNG or WebP image');
+  const ext = m[2] ? 'pdf' : m[1] === 'jpg' ? 'jpeg' : m[1];
+  const buf = Buffer.from(m[3], 'base64');
+  if (buf.length > 10 * 1024 * 1024) bad('Each file must be under 10 MB');
+  if (ext === 'pdf' && buf.subarray(0, 5).toString() !== '%PDF-') bad('That file is not a valid PDF');
   const name = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.${ext === 'jpeg' ? 'jpg' : ext}`;
   fs.writeFileSync(path.join(UPLOAD_DIR, name), buf);
   return name;
@@ -521,6 +522,12 @@ route('POST', '/api/vehicles', { auth: 'admin' }, ({ body }) => {
 route('PUT', '/api/vehicles/:id', { auth: 'admin' }, ({ params, body }) => {
   const v = get(`SELECT * FROM vehicles WHERE id=?`, Number(params.id));
   if (!v) bad('Vehicle not found');
+  if (body.initial_km !== undefined && Number(body.initial_km) !== v.initial_km) {
+    const used = get(`SELECT 1 AS x FROM trips WHERE vehicle_id=:v UNION SELECT 1 FROM fuel_logs WHERE vehicle_id=:v AND odometer IS NOT NULL
+                      UNION SELECT 1 FROM services WHERE vehicle_id=:v UNION SELECT 1 FROM accidents WHERE vehicle_id=:v LIMIT 1`, { v: v.id });
+    if (used) bad('The starting odometer can only be changed before any trip, fuel, service or accident is recorded');
+    run(`UPDATE vehicles SET initial_km=? WHERE id=?`, num(body.initial_km, 'Starting odometer'), v.id);
+  }
   run(`UPDATE vehicles SET model=?, fuel_type=?, oil_interval_km=?, assigned_driver_id=?, active=? WHERE id=?`,
     str(body.model ?? v.model, 'Model', { max: 100 }),
     vehicleFuel(body.fuel_type, v.fuel_type),
@@ -633,6 +640,7 @@ route('POST', '/api/loyverse/unmatched/:id/ignore', { auth: 'admin' }, ({ params
 
 // --- vehicle documents: insurance / pollution / fitness / tax / permit (admin)
 const documents = require('./documents')({ db, all, get, run, today });
+const { FILE_FIELDS } = require('./documents');
 const docErr = (e) => { throw new HttpError(e.status && e.status < 500 ? e.status : 502, e.message); };
 route('GET', '/api/documents', { auth: 'admin' }, () => ({ vehicles: documents.list(), settings: documents.status() }));
 route('PUT', '/api/documents/settings', { auth: 'admin' }, ({ body }) => {
@@ -644,7 +652,14 @@ route('POST', '/api/documents/sync', { auth: 'admin' }, async ({ body }) => {
   return documents.syncAll({ smart: Boolean(body.smart) }).catch(docErr);
 });
 route('PUT', '/api/documents/:vehicleId', { auth: 'admin' }, ({ params, body }) => {
-  try { return documents.updateManual(Number(params.vehicleId), body); } catch (e) { return docErr(e); }
+  // body.files: { rc_file: "data:…" (new upload) | null (remove) }; anything else is left as it is
+  const files = {};
+  for (const f of FILE_FIELDS) {
+    const v = body.files?.[f];
+    if (v === null) files[f] = null;
+    else if (typeof v === 'string' && v.startsWith('data:')) files[f] = saveImage(v, { allowPdf: true });
+  }
+  try { return documents.updateManual(Number(params.vehicleId), body, files); } catch (e) { return docErr(e); }
 });
 
 // --- one vehicle: everything about it
@@ -810,7 +825,7 @@ route('GET', '/api/export/:kind', ({ user, params, query, res }) => {
 // ---------------------------------------------------------------- static files
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp',
-  '.webmanifest': 'application/manifest+json', '.ico': 'image/x-icon' };
+  '.webmanifest': 'application/manifest+json', '.ico': 'image/x-icon', '.pdf': 'application/pdf' };
 
 function serveFile(res, file, extraHeaders = {}) {
   fs.readFile(file, (err, data) => {

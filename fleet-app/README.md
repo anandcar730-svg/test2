@@ -67,6 +67,16 @@ Lifetime road tax (`LTT`) is shown as **Lifetime**.
 
 **Without an API key**, click **✏️ Edit** and type the dates by hand. Typed dates are kept until an online update brings a value for that field.
 
+## Vehicle details by hand
+**Vehicles → ✏️ Edit details** opens one page for everything about a vehicle. It also opens right after you add a vehicle, and from the vehicle page and the Documents page. All fields are optional:
+- **Basic:** model, fuel, oil-change interval, driver, active. The starting odometer can be corrected until the first record is entered.
+- **Registration (RC):** owner, make/model, class, registration date and RTO, chassis and engine numbers, month/year of manufacture, colour, seating, financer, RC status.
+- **Insurance** (company, policy no., valid till), **PUC** (number, valid till), **Fitness**, **Road tax** (or *Lifetime*), **Permit**.
+- **Scanned papers:** a photo or PDF for the RC, insurance, PUC, fitness, tax and permit. Files are only visible to logged-in users.
+- **Notes.**
+
+If an online lookup is connected, it fills in the same fields. Values you typed are kept wherever the lookup has nothing, and scanned papers are never changed by it.
+
 ## Vehicle page
 Click any vehicle number to see everything about that vehicle on one page:
 - details: driver, odometer, mileage, oil-change status
