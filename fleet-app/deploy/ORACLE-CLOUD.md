@@ -116,24 +116,35 @@ sudo chown -R fleet:fleet /var/lib/fleet && sudo systemctl start fleet-app
 - **Oracle stopped my VM:** Oracle may reclaim *idle* Always Free instances. Upgrading the account to **Pay-As-You-Go** stops that, and you still pay nothing as long as you stay within the free limits.
 - **Make off-server copies too.** Download the backups now and then (command above). The daily backups protect against mistakes, but they sit on the same server, so they don't protect against losing the server.
 
-## Using Cloudflare (orange cloud / "Proxied")
-Error **526 Invalid SSL certificate** means Cloudflare couldn't verify the certificate on the server. Pick one of these fixes.
+## Server already hosting other websites
+The script is safe to run on a VM that already serves other sites (for example `matrimony.`, `mark.`, `token.`, `stock.shalomchurch.co.in`):
+- It finds the web server that already owns ports 80/443 and **adds one new site**:
+  - **Nginx:** adds `/etc/nginx/sites-available/fleet-app.conf`.
+  - **Caddy:** adds a marked `# BEGIN fleet-app … # END fleet-app` block to the Caddyfile.
+- **Your other sites aren't changed.** The current config is backed up first (`/root/nginx-backup-*.tar.gz` or `/etc/caddy/Caddyfile.bak-*`). If the config test fails, the change is undone.
+- It refuses to run if another Nginx site already uses the same domain name.
+- The app runs on a **free local port** (3080 or higher, on 127.0.0.1 only), so it doesn't clash with your other apps.
+- **Apache servers aren't supported by the script.** It stops with a message, and you need to set up the proxy yourself.
 
-**Option A (simplest): DNS only.** Turn Cloudflare's proxy off for this record.
-1. In Cloudflare, go to **DNS → Records**, edit `driver-log`, and switch it to **DNS only** (grey cloud).
-2. Wait 2 minutes, then on the server run `sudo systemctl restart caddy`.
-3. Caddy gets a free Let's Encrypt certificate and renews it by itself.
+## Using Cloudflare
+Error **526 Invalid SSL certificate** means Cloudflare is proxying (orange cloud) and the server didn't show a valid certificate for this exact name. Pick one of these fixes.
 
-**Option B: keep the orange cloud.** Use a Cloudflare Origin Certificate.
-1. In Cloudflare, go to **SSL/TLS → Origin Server → Create Certificate**. Keep the defaults (RSA, hostnames `*.shalomchurch.co.in` and `shalomchurch.co.in`, 15 years) and click **Create**.
-2. On the server, paste the two text boxes into these files:
-   ```bash
-   sudo mkdir -p /etc/caddy
-   sudo nano /etc/caddy/cloudflare-origin.pem   # paste "Origin Certificate", save with Ctrl+O, Enter, Ctrl+X
-   sudo nano /etc/caddy/cloudflare-origin.key   # paste "Private Key", save the same way
-   ```
-3. Run the setup again:
+**Option A: DNS only (grey cloud) with a free Let's Encrypt certificate.**
+1. In Cloudflare, go to **DNS → Records** and set `driver-log` to **DNS only**. Check that no **AAAA** or wildcard `*` record is still proxied.
+2. Wait 5 minutes, then run on the server:
    `cd ~/fleet-app && sudo bash deploy/oracle-setup.sh driver-log.shalomchurch.co.in`
-4. In Cloudflare, go to **SSL/TLS → Overview** and set the mode to **Full (strict)**.
 
-Cloudflare limits uploads to 100 MB on the free plan. Photos from the app are compressed to well under that.
+**Option B: keep the orange cloud and use a Cloudflare Origin Certificate.** This is the right choice if your other sites are already proxied.
+1. In Cloudflare, go to **SSL/TLS → Origin Server → Create Certificate**. Keep the defaults (it covers `*.shalomchurch.co.in` for 15 years) and click **Create**.
+2. On the server:
+   ```bash
+   sudo mkdir -p /etc/fleet-app/ssl
+   sudo nano /etc/fleet-app/ssl/origin.pem   # paste "Origin Certificate" → Ctrl+O, Enter, Ctrl+X
+   sudo nano /etc/fleet-app/ssl/origin.key   # paste "Private Key"        → Ctrl+O, Enter, Ctrl+X
+   cd ~/fleet-app && sudo bash deploy/oracle-setup.sh driver-log.shalomchurch.co.in
+   ```
+3. In Cloudflare, set **SSL/TLS → Overview → Full (strict)**. Set the `driver-log` record back to **Proxied** if you want.
+
+If your other sites already use a Cloudflare Origin Certificate for `*.shalomchurch.co.in`, you can copy those two files instead of creating new ones.
+
+Cloudflare's free plan limits uploads to 100 MB per request. The app's photos are well under that.
