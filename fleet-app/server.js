@@ -631,6 +631,22 @@ route('POST', '/api/loyverse/unmatched/:id/ignore', { auth: 'admin' }, ({ params
   return { ok: true };
 });
 
+// --- vehicle documents: insurance / pollution / fitness / tax / permit (admin)
+const documents = require('./documents')({ db, all, get, run, today });
+const docErr = (e) => { throw new HttpError(e.status && e.status < 500 ? e.status : 502, e.message); };
+route('GET', '/api/documents', { auth: 'admin' }, () => ({ vehicles: documents.list(), settings: documents.status() }));
+route('PUT', '/api/documents/settings', { auth: 'admin' }, ({ body }) => {
+  try { documents.configure(body); } catch (e) { docErr(e); }
+  return documents.status();
+});
+route('POST', '/api/documents/sync', { auth: 'admin' }, async ({ body }) => {
+  if (body.vehicle_id) return documents.syncOne(Number(body.vehicle_id)).catch(docErr);
+  return documents.syncAll().catch(docErr);
+});
+route('PUT', '/api/documents/:vehicleId', { auth: 'admin' }, ({ params, body }) => {
+  try { return documents.updateManual(Number(params.vehicleId), body); } catch (e) { return docErr(e); }
+});
+
 // --- one vehicle: everything about it
 route('GET', '/api/vehicles/:id/summary', ({ user, params, query }) => {
   const v = get(`SELECT v.*, u.name AS driver_name, u.phone AS driver_phone FROM vehicles v
@@ -664,6 +680,7 @@ route('GET', '/api/vehicles/:id/summary', ({ user, params, query }) => {
     services: list(`SELECT t.*, u.name AS driver_name FROM services t JOIN users u ON u.id=t.driver_id
                     WHERE t.vehicle_id=:v ${mine} ORDER BY t.date DESC, t.id DESC LIMIT 30`),
     accidents: listers.accidents(user, new URLSearchParams({ vehicle: String(v.id) })).slice(0, 30),
+    documents: documents.forVehicle(v.id),
   };
 });
 
@@ -773,6 +790,7 @@ route('GET', '/api/dashboard', ({ user }) => {
       cost_per_km: kmForCost > 0 ? +(monthFuel.amount / kmForCost).toFixed(2) : null },
     open_accidents: get(`SELECT COUNT(*) AS n FROM accidents WHERE status!='closed' ${dw}`, p).n,
     pos_unmatched: mine ? 0 : get(`SELECT COUNT(*) AS n FROM pos_unmatched WHERE status='pending'`).n,
+    doc_alerts: documents.alerts(mine ? all(`SELECT id FROM vehicles WHERE assigned_driver_id=?`, user.id).map((x) => x.id) : null),
     vehicles: mine ? vehicles.filter((v) => v.assigned_driver_id === user.id || ['overdue', 'due_soon'].includes(v.oil_status)
       || get(`SELECT 1 AS x FROM trips WHERE vehicle_id=:v AND driver_id=:me UNION SELECT 1 FROM fuel_logs WHERE vehicle_id=:v AND driver_id=:me LIMIT 1`, { v: v.id, me: user.id })) : vehicles,
     daily,
@@ -855,4 +873,5 @@ const server = http.createServer(async (req, res) => {
 if (require.main === module) {
   server.listen(PORT, HOST, () => console.log(`Fleet Driver Monitor running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`));
 }
+server.documents = documents; // exposed for tests
 module.exports = { server, db };

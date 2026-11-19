@@ -38,6 +38,23 @@ If your pump or shop uses **Loyverse POS**, fuel sales are added automatically.
 Fuel items are recognised by name: *Petrol / Power / Speed / XP95* → Petrol, *Diesel / HSD* → Diesel, *CNG* → CNG.
 Optional settings: `LOYVERSE_SYNC_MINUTES` (default 5) and `LOYVERSE_API` (for testing).
 
+## Vehicle documents (insurance, pollution, fitness)
+The **Documents** page (admin) shows every vehicle's expiry dates for **insurance, pollution (PUC), fitness, road tax and permit**, colour-coded:
+- **green:** valid
+- **orange:** expires within 30 days
+- **red:** expired
+
+Expired and expiring documents also appear as alerts on the dashboard (drivers see their own vehicle's) and on each vehicle's page.
+
+**Online update by vehicle number.** These details live in VAHAN (Parivahan), which has **no free public API**. Use a licensed **RC-verification API** provider, for example Surepass, Signzy, IDfy or Cashfree. Each lookup is a paid call.
+1. Sign up with a provider and get an API key.
+2. Go to **Documents → Online lookup settings**, choose the provider and paste the key:
+   - **Surepass** is set up already.
+   - **Other provider (custom)** lets you enter the URL, header and JSON body for any provider. The response is searched for the usual field names (`insurance_upto`, `pucc_upto`, `fit_up_to`, `tax_upto`, …).
+3. All active vehicles are then updated **every morning** (06:00 by default, configurable). You can also use **Sync all now**, or **🔄 Sync** on one vehicle.
+
+**Without an API key**, click **✏️ Edit** and type the dates by hand. Typed dates are kept until an online update brings a value for that field.
+
 ## Vehicle page
 Click any vehicle number to see everything about that vehicle on one page:
 - details: driver, odometer, mileage, oil-change status

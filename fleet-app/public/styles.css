@@ -126,3 +126,8 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
 a.vlink { color: inherit; text-decoration: underline dotted; text-underline-offset: 3px; }
 a.vlink:hover { color: var(--brand-2); }
 @media (prefers-color-scheme: dark) { .badge.src-pos { color: #c4b5fd; } }
+details.card > summary { cursor: pointer; list-style: none; display: flex; gap: 8px; align-items: center; }
+details.card > summary::-webkit-details-marker { display: none; }
+details.card > summary::before { content: '▸'; color: var(--muted); }
+details.card[open] > summary::before { content: '▾'; }
+details.card[open] > summary { margin-bottom: 10px; }

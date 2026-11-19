@@ -22,6 +22,19 @@ const primaryFuel = (vf) => (vf === 'EV' ? 'EV' : Object.keys(FUEL).find((k) => 
 /** km this month: trips, or odometer readings when they show more (EVs logged by odometer only) */
 const monthKmCell = (v) => (v.month_odometer_km > v.month_km
   ? `${fmt(v.month_odometer_km, 1)}<br><small class="muted">from odometer</small>` : fmt(v.month_km, 1));
+// Vehicle documents
+const DOCS = [['insurance', '🛡 Insurance'], ['pucc', '💨 Pollution (PUC)'], ['fitness', '✅ Fitness'], ['tax', '🧾 Road tax'], ['permit', '📜 Permit']];
+const DOC_SHORT = { insurance: 'Insurance', pucc: 'Pollution (PUC)', fitness: 'Fitness', tax: 'Road tax', permit: 'Permit' };
+const niceDate = (d) => (d ? new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—');
+const docCell = (s) => {
+  if (!s || !s.upto) return '<span class="muted">—</span>';
+  const cls = s.status === 'expired' ? 'danger' : s.status === 'due' ? 'warn' : 'ok';
+  const txt = s.status === 'expired' ? `Expired ${-s.days_left} day${s.days_left === -1 ? '' : 's'} ago`
+    : s.days_left === 0 ? 'Expires today' : `${s.days_left} day${s.days_left === 1 ? '' : 's'} left`;
+  return `<b>${niceDate(s.upto)}</b><br><span class="badge ${cls}">${txt}</span>`;
+};
+const docAlertText = (a) => `<b>${esc(a.reg_no)}</b>: ${esc(DOC_SHORT[a.doc] || a.label)} ${a.status === 'expired'
+  ? `<b>expired ${-a.days_left} day(s) ago</b>` : a.days_left === 0 ? '<b>expires today</b>' : `expires in ${a.days_left} day(s)`} (${niceDate(a.upto)})`;
 /** Link to a vehicle's own page */
 const vlink = (id, reg) => `<a class="vlink" href="#/vehicle/${encodeURIComponent(id)}">${esc(reg)}</a>`;
 const sourceBadge = (r) => (r.source === 'loyverse' ? '<span class="badge src-pos" title="Imported from Loyverse POS">🧾 Loyverse</span>' : '');
@@ -204,6 +217,8 @@ pages.dashboard = async (main) => {
     ${alerts.map((v) => `<div class="alert ${v.oil_status === 'overdue' ? 'danger' : 'warn'}">
       🛢 <b>${esc(v.reg_no)}</b>: oil change ${v.oil_status === 'overdue'
         ? `<b>overdue by ${fmt(-v.oil_remaining_km)} km</b>` : `due in ${fmt(v.oil_remaining_km)} km`} (at ${fmt(v.oil_due_km)} km)</div>`).join('')}
+    ${(d.doc_alerts || []).map((a) => `<div class="alert ${a.status === 'expired' ? 'danger' : 'warn'}">📄 ${docAlertText(a)}${
+      isAdmin ? ' · <a href="#/documents">Documents</a>' : ''}</div>`).join('')}
     ${d.pos_unmatched ? `<div class="alert warn">🧾 ${d.pos_unmatched} Loyverse fuel sale(s) need a vehicle. <a href="#/loyverse">Assign</a></div>` : ''}
     ${d.open_accidents ? `<div class="alert danger">⚠️ ${d.open_accidents} accident report(s) not closed. <a href="#/accidents">View</a></div>` : ''}
     <div class="grid">
@@ -415,6 +430,12 @@ pages.vehicle = async (main, id) => {
       <div class="stat"><div class="v" style="font-size:1rem">${oilBadge(v)}</div><div class="l">Oil change</div></div>
     </div>
     <div class="card"><h2>All time</h2><p>${fmt(d.totals.km, 1)} km driven · ${money(d.totals.fuel_amount)} fuel · ${money(d.totals.service_cost)} service · ${d.totals.accidents} accident(s)</p></div>
+    <div class="card"><h2>📄 Documents</h2>
+      <div class="grid" style="margin:0">${DOCS.map(([k, l]) => `<div class="stat"><div class="l">${l}</div><div style="margin-top:6px">${docCell(d.documents?.docs?.[k])}</div>
+        ${k === 'insurance' && d.documents?.insurance_company ? `<small class="muted" style="overflow-wrap:anywhere">${esc(d.documents.insurance_company)}${d.documents.insurance_policy ? ' · ' + esc(d.documents.insurance_policy) : ''}</small>` : ''}
+        ${k === 'pucc' && d.documents?.pucc_number ? `<small class="muted">No. ${esc(d.documents.pucc_number)}</small>` : ''}</div>`).join('')}</div>
+      <p class="muted" style="margin-bottom:0">${d.documents?.fetched_at ? `Updated online ${new Date(d.documents.fetched_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}`
+        : d.documents?.source === 'manual' ? 'Entered manually' : 'No document details yet'}${admin ? ' · <a href="#/documents">Manage</a>' : ''}</p></div>
     <div class="card"><h2>Fuel &amp; charging <small class="muted">(last 30)</small></h2><div class="table-wrap" id="vfuel"><table>
       <tr><th>Date</th><th>Fuel</th><th>Odometer</th><th>Qty</th><th>Amount</th><th>Station</th><th>By</th><th>Bill</th></tr>
       ${d.fuel.map((r) => `<tr><td>${esc(r.date)}</td><td>${fuelBadge(r.fuel_type)} ${sourceBadge(r)}</td><td>${odoCell(r)}</td>
@@ -436,6 +457,100 @@ pages.vehicle = async (main, id) => {
     </table></div></div>
     <div class="card"><h2>Accidents</h2>${d.accidents.length ? accidentTable(d.accidents) : '<p class="muted">No accidents. 👍</p>'}</div>`;
   bindOdoButtons(main, () => route());
+};
+
+// --- vehicle documents (admin): insurance, pollution, fitness, tax, permit
+pages.documents = async (main) => {
+  const { vehicles, settings: st } = await api('/api/documents');
+  const t = (iso) => (iso ? new Date(iso).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : 'never');
+  const counts = { expired: 0, due: 0 };
+  for (const v of vehicles) for (const [k] of DOCS) if (v.docs[k].status in counts) counts[v.docs[k].status]++;
+  const ls = st.last_sync;
+  main.innerHTML = `<h1>📄 Vehicle documents</h1>
+    <p class="muted">Insurance, pollution (PUC), fitness, road tax and permit expiry for every vehicle.
+      ${st.has_key && st.enabled ? `Updated online automatically every morning at ${String(st.hour).padStart(2, '0')}:00.` : 'Enter dates by hand, or add an online lookup key below to update them automatically.'}</p>
+    <div class="grid">
+      <div class="stat"><div class="v" style="color:var(--danger)">${counts.expired}</div><div class="l">Expired</div></div>
+      <div class="stat"><div class="v" style="color:var(--warn)">${counts.due}</div><div class="l">Expiring within 30 days</div></div>
+      <div class="stat"><div class="v">${vehicles.length}</div><div class="l">Vehicles</div></div>
+      <div class="stat"><div class="l">Last online update</div><div style="margin-top:6px"><b>${ls ? t(ls.at) : 'never'}</b>${ls ? `<br><small class="muted">${ls.updated} updated${ls.failed.length ? `, ${ls.failed.length} failed` : ''}</small>` : ''}</div></div>
+    </div>
+    <div class="actions" style="margin:0 0 16px"><button class="primary" id="syncall" ${st.has_key ? '' : 'disabled title="Add an API key first"'}>🔄 Sync all now</button></div>
+    <div class="card"><div class="table-wrap"><table>
+      <tr><th>Vehicle</th>${DOCS.map(([, l]) => `<th>${l}</th>`).join('')}<th>Updated</th><th></th></tr>
+      ${vehicles.map((v) => `<tr><td><b>${vlink(v.vehicle_id, v.reg_no)}</b><br><small class="muted">${esc(v.maker_model || v.model || '')}</small>
+          ${v.owner_name ? `<br><small class="muted">Owner: ${esc(v.owner_name)}</small>` : ''}${v.rc_status ? `<br><small class="muted">RC: ${esc(v.rc_status)}</small>` : ''}</td>
+        ${DOCS.map(([k]) => `<td>${docCell(v.docs[k])}${k === 'insurance' && v.insurance_company ? `<br><small class="muted">${esc(v.insurance_company)}</small>` : ''}</td>`).join('')}
+        <td><small>${v.fetched_at ? `🌐 ${t(v.fetched_at)}` : v.source === 'manual' ? '✍️ manual' : '—'}</small>
+          ${v.last_error ? `<br><small style="color:var(--danger)" title="${esc(v.last_error)}">⚠ ${esc(v.last_error.slice(0, 60))}</small>` : ''}</td>
+        <td style="white-space:nowrap"><button class="small" data-sync="${v.vehicle_id}" ${st.has_key ? '' : 'disabled'}>🔄 Sync</button>
+          <button class="small" data-edit="${v.vehicle_id}">✏️ Edit</button></td></tr>`).join('') || '<tr><td colspan="8" class="muted">No vehicles yet.</td></tr>'}
+    </table></div></div>
+    <details class="card" ${st.has_key ? '' : 'open'}><summary><b>⚙️ Online lookup settings</b> ${st.has_key ? `<span class="badge ok">key ${esc(st.key_hint)}</span>` : '<span class="badge warn">not set up</span>'}</summary>
+      <p class="muted">Details come from VAHAN (Parivahan) through a licensed <b>RC-verification API</b> – there is no free official API.
+        Sign up with a provider (e.g. <b>Surepass</b>, Signzy, IDfy, Cashfree) and paste the API key. Each vehicle is looked up once a day (a paid lookup each time).</p>
+      <form id="sf"><div class="fields">
+        <label><span>Provider</span><select name="provider">${st.presets.map((p) => `<option value="${p}" ${p === st.provider ? 'selected' : ''}>${p === 'surepass' ? 'Surepass (RC full)' : 'Other provider (custom)'}</option>`).join('')}</select></label>
+        <label><span>API key / token</span><input name="key" autocomplete="off" placeholder="${st.has_key ? 'leave blank to keep ' + esc(st.key_hint) : 'paste key'}"></label>
+        <label><span>Daily update time</span><select name="hour">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === st.hour ? 'selected' : ''}>${String(h).padStart(2, '0')}:00</option>`).join('')}</select></label>
+        <label class="check"><input type="checkbox" name="enabled" ${st.enabled ? 'checked' : ''}> Update automatically every morning</label>
+        <div class="full" data-custom style="display:none"><div class="fields">
+          <label class="full"><span>API URL (use {vehicle_number} if it goes in the URL)</span><input name="url" value="${esc(st.provider === 'custom' ? st.url : '')}" placeholder="https://api.example.com/rc/verify"></label>
+          <label><span>Method</span><select name="method">${['POST', 'GET'].map((m) => `<option ${m === st.method ? 'selected' : ''}>${m}</option>`).join('')}</select></label>
+          <label><span>Auth header</span><input name="auth_header" value="${esc(st.auth_header)}"></label>
+          <label><span>Key prefix</span><input name="auth_prefix" value="${esc(st.auth_prefix)}" placeholder="Bearer "></label>
+          <label class="full"><span>Request body (JSON)</span><input name="body" value="${esc(st.body)}"></label>
+        </div></div>
+      </div><div class="actions"><button class="primary" type="submit">Save settings</button>
+        ${st.has_key ? '<button type="button" class="danger" id="rmkey">Remove key</button>' : ''}</div></form></details>
+    <dialog id="dlg"><form method="dialog" id="df"><h2 id="dtitle">Edit documents</h2>
+      <p class="muted" style="margin-top:0">Typed dates are kept until an online update brings newer ones.</p><div class="fields">
+      <label><span>Insurance valid till</span><input type="date" name="insurance_upto"></label>
+      <label><span>Insurance company</span><input name="insurance_company"></label>
+      <label><span>Policy number</span><input name="insurance_policy"></label>
+      <label><span>Pollution (PUC) valid till</span><input type="date" name="pucc_upto"></label>
+      <label><span>PUC number</span><input name="pucc_number"></label>
+      <label><span>Fitness valid till</span><input type="date" name="fitness_upto"></label>
+      <label><span>Road tax valid till</span><input type="date" name="tax_upto"></label>
+      <label><span>Permit valid till</span><input type="date" name="permit_upto"></label>
+    </div><div class="actions"><button class="primary" type="submit">Save</button><button type="button" id="dc">Cancel</button></div></form></dialog>`;
+
+  const sf = $('#sf', main);
+  const showCustom = () => ($('[data-custom]', sf).style.display = sf.provider.value === 'custom' ? '' : 'none');
+  sf.provider.onchange = showCustom; showCustom();
+  sf.onsubmit = (e) => { e.preventDefault(); submitting(sf, async () => {
+    const b = { provider: sf.provider.value, hour: Number(sf.hour.value), enabled: sf.enabled.checked };
+    if (sf.key.value.trim()) b.key = sf.key.value.trim();
+    if (b.provider === 'custom') Object.assign(b, { url: sf.url.value.trim(), method: sf.method.value, auth_header: sf.auth_header.value.trim(),
+      auth_prefix: sf.auth_prefix.value, body: sf.body.value.trim() });
+    await api('/api/documents/settings', { method: 'PUT', body: b });
+    toast('Settings saved'); route();
+  }); };
+  const busy = async (btn, fn) => { btn.disabled = true; const old = btn.textContent; btn.textContent = '⏳ Updating…';
+    try { await fn(); } catch (err) { toast(err.message, true); } finally { btn.disabled = false; btn.textContent = old; } };
+  $('#syncall', main).onclick = (e) => busy(e.target, async () => {
+    const r = await api('/api/documents/sync', { method: 'POST', body: {} });
+    toast(`${r.updated} vehicle(s) updated${r.failed.length ? `, ${r.failed.length} failed` : ''}`, r.failed.length > 0 && !r.updated); route();
+  });
+  const rm = $('#rmkey', main);
+  if (rm) rm.onclick = async () => { if (!confirm('Remove the API key? Automatic updates will stop.')) return;
+    await api('/api/documents/settings', { method: 'PUT', body: { key: '' } }); route(); };
+  for (const b of $$('[data-sync]', main)) b.onclick = () => busy(b, async () => {
+    const r = await api('/api/documents/sync', { method: 'POST', body: { vehicle_id: b.dataset.sync } });
+    if (r.ok) toast(`${r.reg_no} updated`); else toast(r.error, true);
+    setTimeout(route, r.ok ? 0 : 2500);
+  });
+  const dlg = $('#dlg', main), df = $('#df', main);
+  $('#dc', main).onclick = () => dlg.close();
+  for (const b of $$('[data-edit]', main)) b.onclick = () => {
+    const v = vehicles.find((x) => String(x.vehicle_id) === b.dataset.edit);
+    $('#dtitle', main).textContent = `Edit documents – ${v.reg_no}`;
+    for (const f of ['insurance_upto', 'insurance_company', 'insurance_policy', 'pucc_upto', 'pucc_number', 'fitness_upto', 'tax_upto', 'permit_upto']) df[f].value = v[f] || '';
+    df.onsubmit = async (e) => { e.preventDefault();
+      try { await api(`/api/documents/${v.vehicle_id}`, { method: 'PUT', body: formData(df) }); dlg.close(); toast('Saved'); route(); }
+      catch (err) { toast(err.message, true); } };
+    dlg.showModal();
+  };
 };
 
 // --- Loyverse POS (admin)
@@ -728,7 +843,7 @@ pages.profile = async (main) => {
 const NAV = [
   ['dashboard', '📊', 'Dashboard'], ['trips', '🚗', 'Daily km'], ['fuel', '⛽', 'Fuel'],
   ['services', '🛢', 'Service'], ['accidents', '⚠️', 'Accidents'],
-  ['vehicles', '🚐', 'Vehicles', 'admin'], ['drivers', '👤', 'Drivers', 'admin'], ['loyverse', '🧾', 'Loyverse', 'admin'],
+  ['vehicles', '🚐', 'Vehicles', 'admin'], ['drivers', '👤', 'Drivers', 'admin'], ['documents', '📄', 'Documents', 'admin'], ['loyverse', '🧾', 'Loyverse', 'admin'],
   ['profile', '⚙️', 'Profile'],
 ];
 
