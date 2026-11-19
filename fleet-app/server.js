@@ -700,8 +700,10 @@ const server = http.createServer(async (req, res) => {
     // Static front-end (single page app)
     const file = path.join(PUBLIC_DIR, path.normalize(pathname === '/' ? '/index.html' : pathname));
     if (!file.startsWith(PUBLIC_DIR)) return send(res, 400, 'Bad path');
-    if (fs.existsSync(file) && fs.statSync(file).isFile()) return serveFile(res, file);
-    return serveFile(res, path.join(PUBLIC_DIR, 'index.html'));
+    // index.html must always be fresh (it points to versioned app.js?v=N / styles.css?v=N)
+    const noCache = { 'Cache-Control': 'no-cache' };
+    if (fs.existsSync(file) && fs.statSync(file).isFile()) return serveFile(res, file, file.endsWith('.html') ? noCache : {});
+    return serveFile(res, path.join(PUBLIC_DIR, 'index.html'), noCache);
   } catch (err) {
     const status = err.status || 500;
     if (status === 500) console.error(err);
