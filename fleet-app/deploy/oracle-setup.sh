@@ -39,6 +39,19 @@ if [[ -z "$DOMAIN" ]]; then
   [[ "$PUBLIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Could not detect the public IP. Pass a domain: sudo bash deploy/oracle-setup.sh your.domain"
   DOMAIN="${PUBLIC_IP//./-}.sslip.io"   # free hostname that points to this IP
 fi
+DOMAIN="$(echo "$DOMAIN" | tr 'A-Z' 'a-z' | sed -e 's#^https\?://##' -e 's#/.*$##')"
+if [[ "$DOMAIN" == *_* ]]; then
+  die "'$DOMAIN' contains an underscore (_). Web addresses cannot use underscores and no HTTPS
+       certificate can be issued for them. Use a hyphen or nothing instead, e.g. ${DOMAIN//_/-}"
+fi
+[[ "$DOMAIN" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] || die "'$DOMAIN' is not a valid domain name."
+if [[ -n "${1:-}" && -n "$PUBLIC_IP" ]]; then
+  DNS_IP="$(getent ahostsv4 "$DOMAIN" | awk 'NR==1{print $1}' || true)"
+  if [[ "$DNS_IP" != "$PUBLIC_IP" ]]; then
+    printf '\n\033[1;33mWARNING: %s points to "%s" but this server is %s.\033[0m\n' "$DOMAIN" "${DNS_IP:-nothing}" "$PUBLIC_IP"
+    echo "Add a DNS A record: ${DOMAIN%%.*}  ->  $PUBLIC_IP  (HTTPS starts working once it updates)."
+  fi
+fi
 say "Setting up https://$DOMAIN"
 
 # ---------------------------------------------------------------- packages

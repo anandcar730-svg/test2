@@ -68,11 +68,21 @@ Password   : Xk3f9Qa2LmP7
 **Write the password down.** It is shown only once. Open the link, log in, and change it on the **Profile** page. Then add your vehicles and drivers, and share the link with your drivers. On a phone, use the browser menu → **Add to Home screen** to make it work like an app.
 
 ### Using your own domain (optional)
-1. At your domain provider, add an **A record**, for example `fleet.mycompany.in → YOUR_PUBLIC_IP`.
-2. Wait a few minutes, then run on the server:
+Example: `driver-log.shalomchurch.co.in`.
+
+1. At your domain provider's DNS settings for `shalomchurch.co.in`, add this record:
+
+   | Type | Name / Host | Value / Points to | TTL |
+   |---|---|---|---|
+   | A | `driver-log` | `YOUR_PUBLIC_IP` | 600 (or default) |
+
+   Use a **hyphen (`-`), not an underscore (`_`)**. Web addresses can't contain underscores, and no HTTPS certificate can be issued for them. `driverlog` (no separator) also works.
+2. Wait 5–30 minutes. Check the record with `nslookup driver-log.shalomchurch.co.in`; it should show your server's IP.
+3. Run on the server:
    ```bash
-   cd ~/fleet-app && sudo bash deploy/oracle-setup.sh fleet.mycompany.in
+   cd ~/fleet-app && sudo bash deploy/oracle-setup.sh driver-log.shalomchurch.co.in
    ```
+   The script warns you if the domain doesn't point to the server yet. HTTPS starts working automatically once it does.
 
 ---
 
