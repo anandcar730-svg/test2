@@ -28,6 +28,7 @@ const DOC_SHORT = { insurance: 'Insurance', pucc: 'Pollution (PUC)', fitness: 'F
 const niceDate = (d) => (d ? new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—');
 const docCell = (s) => {
   if (!s || !s.upto) return '<span class="muted">—</span>';
+  if (s.upto.startsWith('9999')) return '<b>Lifetime</b><br><span class="badge ok">LTT – no renewal</span>';
   const cls = s.status === 'expired' ? 'danger' : s.status === 'due' ? 'warn' : 'ok';
   const txt = s.status === 'expired' ? `Expired ${-s.days_left} day${s.days_left === -1 ? '' : 's'} ago`
     : s.days_left === 0 ? 'Expires today' : `${s.days_left} day${s.days_left === 1 ? '' : 's'} left`;
@@ -468,14 +469,23 @@ pages.documents = async (main) => {
   const ls = st.last_sync;
   main.innerHTML = `<h1>📄 Vehicle documents</h1>
     <p class="muted">Insurance, pollution (PUC), fitness, road tax and permit expiry for every vehicle.
-      ${st.has_key && st.enabled ? `Updated online automatically every morning at ${String(st.hour).padStart(2, '0')}:00.` : 'Enter dates by hand, or add an online lookup key below to update them automatically.'}</p>
+      ${st.has_key && st.enabled ? `Updated online every morning at ${String(st.hour).padStart(2, '0')}:00 (${st.mode === 'all' ? 'every vehicle' : 'smart sync'}).` : 'Enter dates by hand, or add an online lookup key below to update them automatically.'}</p>
     <div class="grid">
       <div class="stat"><div class="v" style="color:var(--danger)">${counts.expired}</div><div class="l">Expired</div></div>
       <div class="stat"><div class="v" style="color:var(--warn)">${counts.due}</div><div class="l">Expiring within 30 days</div></div>
       <div class="stat"><div class="v">${vehicles.length}</div><div class="l">Vehicles</div></div>
-      <div class="stat"><div class="l">Last online update</div><div style="margin-top:6px"><b>${ls ? t(ls.at) : 'never'}</b>${ls ? `<br><small class="muted">${ls.updated} updated${ls.failed.length ? `, ${ls.failed.length} failed` : ''}</small>` : ''}</div></div>
+      <div class="stat"><div class="l">Last online update</div><div style="margin-top:6px"><b>${ls ? t(ls.at) : 'never'}</b>${ls ? `<br><small class="muted">${
+        ls.checked ?? ls.updated} looked up${ls.skipped ? `, ${ls.skipped} skipped` : ''}${ls.failed.length ? `, ${ls.failed.length} failed` : ''}</small>` : ''}</div></div>
+      ${st.has_key ? `<div class="stat"><div class="l">Next morning</div><div style="margin-top:6px"><b>${st.next_run.lookups} lookup(s)</b><br><small class="muted">of ${st.next_run.vehicles} vehicles
+        ${st.provider === 'rtosarthi' ? ` · ≈ ₹${fmt(st.next_run.lookups * 1.5, 2)}` : ''}</small></div></div>` : ''}
+      ${st.usage ? `<div class="stat"><div class="v">${fmt(st.usage.remaining)}</div><div class="l">Prepaid searches left${st.usage.limit ? ` of ${fmt(st.usage.limit)}` : ''}</div></div>` : ''}
     </div>
-    <div class="actions" style="margin:0 0 16px"><button class="primary" id="syncall" ${st.has_key ? '' : 'disabled title="Add an API key first"'}>🔄 Sync all now</button></div>
+    ${st.usage && st.usage.remaining !== null && st.usage.remaining < 50 ? `<div class="alert warn">Only ${st.usage.remaining} prepaid searches left – recharge with your provider.</div>` : ''}
+    <div class="actions" style="margin:0 0 16px">
+      <button class="primary" id="syncsmart" ${st.has_key ? '' : 'disabled title="Add an API key first"'} title="Only vehicles with documents expired / expiring, never checked, or not checked for 30 days">🔄 Smart sync now (${st.next_run.lookups})</button>
+      <button id="syncall" ${st.has_key ? '' : 'disabled title="Add an API key first"'}>Sync all ${st.next_run.vehicles} vehicles</button></div>
+    ${st.has_key && st.mode !== 'all' ? `<details class="card"><summary><b>Why each vehicle is / isn't checked tomorrow</b></summary><div class="table-wrap"><table>
+      ${st.next_run.plan.map((x) => `<tr><td>${vlink(x.vehicle_id, x.reg_no)}</td><td>${x.lookup ? '🔎 ' : '⏭ '}${esc(x.reason)}</td></tr>`).join('')}</table></div></details>` : ''}
     <div class="card"><div class="table-wrap"><table>
       <tr><th>Vehicle</th>${DOCS.map(([, l]) => `<th>${l}</th>`).join('')}<th>Updated</th><th></th></tr>
       ${vehicles.map((v) => `<tr><td><b>${vlink(v.vehicle_id, v.reg_no)}</b><br><small class="muted">${esc(v.maker_model || v.model || '')}</small>
@@ -487,15 +497,22 @@ pages.documents = async (main) => {
           <button class="small" data-edit="${v.vehicle_id}">✏️ Edit</button></td></tr>`).join('') || '<tr><td colspan="8" class="muted">No vehicles yet.</td></tr>'}
     </table></div></div>
     <details class="card" ${st.has_key ? '' : 'open'}><summary><b>⚙️ Online lookup settings</b> ${st.has_key ? `<span class="badge ok">key ${esc(st.key_hint)}</span>` : '<span class="badge warn">not set up</span>'}</summary>
-      <p class="muted">Details come from VAHAN (Parivahan) through a licensed <b>RC-verification API</b> – there is no free official API.
-        Sign up with a provider (e.g. <b>Surepass</b>, Signzy, IDfy, Cashfree) and paste the API key. Each vehicle is looked up once a day (a paid lookup each time).</p>
+      <p class="muted">Details come from VAHAN (Parivahan) through a licensed <b>RC-verification API</b> – there is no free official API. Each lookup is paid.</p>
+      <div class="alert" data-help="rtosarthi" style="display:none"><b>RTO Sarthi</b> – from <b>₹1.5 per successful search</b>, prepaid, no monthly fee.
+        Contact them (WhatsApp/phone <a href="https://wa.me/916264682508" target="_blank" rel="noopener">+91 62646 82508</a>, rtosarthi@gmail.com) for a <b>Vahan API key</b>.
+        They send an <b>integration guide</b> – copy the <b>API URL</b>, the <b>header name</b> for the key, and the request body from it into the fields below.</div>
       <form id="sf"><div class="fields">
-        <label><span>Provider</span><select name="provider">${st.presets.map((p) => `<option value="${p}" ${p === st.provider ? 'selected' : ''}>${p === 'surepass' ? 'Surepass (RC full)' : 'Other provider (custom)'}</option>`).join('')}</select></label>
+        <label><span>Provider</span><select name="provider">${st.presets.map((p) => `<option value="${p}" ${p === st.provider ? 'selected' : ''}>${
+          { rtosarthi: 'RTO Sarthi (from ₹1.5/search)', surepass: 'Surepass (RC full)', custom: 'Other provider (custom)' }[p] || p}</option>`).join('')}</select></label>
         <label><span>API key / token</span><input name="key" autocomplete="off" placeholder="${st.has_key ? 'leave blank to keep ' + esc(st.key_hint) : 'paste key'}"></label>
         <label><span>Daily update time</span><select name="hour">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === st.hour ? 'selected' : ''}>${String(h).padStart(2, '0')}:00</option>`).join('')}</select></label>
+        <label><span>Which vehicles each morning</span><select name="mode">
+          <option value="smart" ${st.mode !== 'all' ? 'selected' : ''}>Smart – only when needed (recommended, ~90% cheaper)</option>
+          <option value="all" ${st.mode === 'all' ? 'selected' : ''}>Every vehicle, every day</option></select>
+          <small class="muted">Smart: vehicles with a document expired or expiring within 30 days (to catch the renewal), never checked, or not checked for 30 days.</small></label>
         <label class="check"><input type="checkbox" name="enabled" ${st.enabled ? 'checked' : ''}> Update automatically every morning</label>
         <div class="full" data-custom style="display:none"><div class="fields">
-          <label class="full"><span>API URL (use {vehicle_number} if it goes in the URL)</span><input name="url" value="${esc(st.provider === 'custom' ? st.url : '')}" placeholder="https://api.example.com/rc/verify"></label>
+          <label class="full"><span>API URL (use {vehicle_number} if it goes in the URL)</span><input name="url" value="${esc(st.editable ? st.url : '')}" placeholder="https://… (from the provider's guide)"></label>
           <label><span>Method</span><select name="method">${['POST', 'GET'].map((m) => `<option ${m === st.method ? 'selected' : ''}>${m}</option>`).join('')}</select></label>
           <label><span>Auth header</span><input name="auth_header" value="${esc(st.auth_header)}"></label>
           <label><span>Key prefix</span><input name="auth_prefix" value="${esc(st.auth_prefix)}" placeholder="Bearer "></label>
@@ -516,22 +533,31 @@ pages.documents = async (main) => {
     </div><div class="actions"><button class="primary" type="submit">Save</button><button type="button" id="dc">Cancel</button></div></form></dialog>`;
 
   const sf = $('#sf', main);
-  const showCustom = () => ($('[data-custom]', sf).style.display = sf.provider.value === 'custom' ? '' : 'none');
+  const showCustom = () => {
+    const pv = sf.provider.value;
+    $('[data-custom]', sf).style.display = pv === 'custom' || pv === 'rtosarthi' ? '' : 'none';
+    $$('[data-help]', sf.closest('details')).forEach((el) => (el.style.display = el.dataset.help === pv ? '' : 'none'));
+  };
   sf.provider.onchange = showCustom; showCustom();
   sf.onsubmit = (e) => { e.preventDefault(); submitting(sf, async () => {
-    const b = { provider: sf.provider.value, hour: Number(sf.hour.value), enabled: sf.enabled.checked };
+    const b = { provider: sf.provider.value, hour: Number(sf.hour.value), enabled: sf.enabled.checked, mode: sf.mode.value };
     if (sf.key.value.trim()) b.key = sf.key.value.trim();
-    if (b.provider === 'custom') Object.assign(b, { url: sf.url.value.trim(), method: sf.method.value, auth_header: sf.auth_header.value.trim(),
+    if (b.provider === 'custom' || b.provider === 'rtosarthi') Object.assign(b, { url: sf.url.value.trim(), method: sf.method.value, auth_header: sf.auth_header.value.trim(),
       auth_prefix: sf.auth_prefix.value, body: sf.body.value.trim() });
     await api('/api/documents/settings', { method: 'PUT', body: b });
     toast('Settings saved'); route();
   }); };
   const busy = async (btn, fn) => { btn.disabled = true; const old = btn.textContent; btn.textContent = '⏳ Updating…';
     try { await fn(); } catch (err) { toast(err.message, true); } finally { btn.disabled = false; btn.textContent = old; } };
-  $('#syncall', main).onclick = (e) => busy(e.target, async () => {
-    const r = await api('/api/documents/sync', { method: 'POST', body: {} });
-    toast(`${r.updated} vehicle(s) updated${r.failed.length ? `, ${r.failed.length} failed` : ''}`, r.failed.length > 0 && !r.updated); route();
+  const runSync = (smart) => (e) => busy(e.target, async () => {
+    if (!smart && !confirm(`Look up all ${st.next_run.vehicles} vehicles now? Each lookup is charged by your provider.`)) return;
+    const r = await api('/api/documents/sync', { method: 'POST', body: { smart } });
+    toast(r.checked === 0 ? 'Everything is up to date – no lookups needed'
+      : `${r.updated} vehicle(s) updated${r.failed.length ? `, ${r.failed.length} failed` : ''}${r.skipped ? `, ${r.skipped} skipped` : ''}`, r.failed.length > 0 && !r.updated);
+    route();
   });
+  $('#syncsmart', main).onclick = runSync(true);
+  $('#syncall', main).onclick = runSync(false);
   const rm = $('#rmkey', main);
   if (rm) rm.onclick = async () => { if (!confirm('Remove the API key? Automatic updates will stop.')) return;
     await api('/api/documents/settings', { method: 'PUT', body: { key: '' } }); route(); };

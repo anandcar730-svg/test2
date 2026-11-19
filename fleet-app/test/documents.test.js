@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { parseDate, extract } = require('../documents.js');
+const { parseDate, extract, usageOf, LIFETIME } = require('../documents.js');
 
 // ---- pure helpers
 assert.equal(parseDate('2026-05-31'), '2026-05-31');
@@ -21,6 +21,20 @@ assert.equal(parseDate('LTT'), null);
 const ex = extract({ result: { vehicle: { insuranceUpto: '12/01/2027', PUC_VALID_UPTO: '01-Jun-2026', fitnessUpto: '2030-01-01', insurer: 'ACME' } } });
 assert.deepEqual([ex.insurance_upto, ex.pucc_upto, ex.fitness_upto, ex.insurance_company], ['2027-01-12', '2026-06-01', '2030-01-01', 'ACME']);
 
+// RTO Sarthi sample response exactly as published on rtosarthi.com/vahan-api
+const RTO_SARTHI_SAMPLE = { success: true, message: 'Vehicle details fetched successfully', vehicleNumber: 'MH12AB1234',
+  data: { REGN_NO: 'MH12AB1234', STATUS: 'ACTIVE', OWNER_NAME: 'SUNITA PATIL', MAKER_DESC: 'MARUTI SUZUKI INDIA LTD', MAKER_MODEL: 'SWIFT VXI',
+    REGN_DT: '12-Apr-2022', REGN_UPTO: '11-Apr-2037', FINANCER_DETAILS: 'HDFC BANK LTD',
+    INSURANCE_COMP: 'ICICI LOMBARD GENERAL INSURANCE CO. LTD.', INS_POLICY_NO: '3001/123456789/00/000', INSURANCE_UPTO: '11-Apr-2027',
+    PUCC_NO: 'MH01200040056789', PUCC_UPTO: '10-Apr-2027', FIT_UPTO: '11-Apr-2037', TAX_UPTO: 'LTT', BLACKLIST_STATUS: 'NA', NOC_DETAILS: 'NA' },
+  usage: { limit: 5000, used: 1240, remaining: 3760 } };
+const rs = extract(RTO_SARTHI_SAMPLE, { rc_status: ['status'] });
+assert.deepEqual([rs.insurance_upto, rs.insurance_company, rs.insurance_policy, rs.pucc_upto, rs.pucc_number, rs.fitness_upto, rs.tax_upto,
+  rs.owner_name, rs.maker_model, rs.rc_status],
+  ['2027-04-11', 'ICICI LOMBARD GENERAL INSURANCE CO. LTD.', '3001/123456789/00/000', '2027-04-10', 'MH01200040056789', '2037-04-11', LIFETIME,
+    'SUNITA PATIL', 'SWIFT VXI', 'ACTIVE']);
+assert.deepEqual(usageOf(RTO_SARTHI_SAMPLE), { limit: 5000, used: 1240, remaining: 3760 });
+
 const KEY = 'sk_live_test_9876';
 const plus = (days) => new Date(Date.now() + days * 864e5).toLocaleDateString('en-CA');
 const db = {
@@ -35,6 +49,15 @@ const fake = http.createServer((req, res) => {
   req.on('data', (c) => (b += c));
   req.on('end', () => {
     const send = (code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+    if (req.url.startsWith('/rtosarthi/')) {
+      if (req.headers['x-api-key'] !== 'RS-KEY-1') return send(401, { success: false, message: 'Invalid API key' });
+      const vn = JSON.parse(b || '{}').vehicleNumber;
+      if (!db[vn]) return send(200, { success: false, message: 'Vehicle not found', usage: { limit: 5000, used: 1241, remaining: 3759 } });
+      const r = db[vn];
+      const dmy = (d) => (d ? new Date(d + 'T00:00:00Z').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' }).replace(/ /g, '-') : d);
+      return send(200, { ...RTO_SARTHI_SAMPLE, vehicleNumber: vn, usage: { limit: 5000, used: 1242, remaining: 3758 },
+        data: { ...RTO_SARTHI_SAMPLE.data, REGN_NO: vn, INSURANCE_UPTO: dmy(r.insurance_upto), PUCC_UPTO: dmy(r.pucc_upto), FIT_UPTO: dmy(r.fit_up_to), TAX_UPTO: 'LTT' } });
+    }
     if (req.headers.authorization !== `Bearer ${KEY}`) return send(401, { message: 'Invalid token', success: false });
     const id = JSON.parse(b || '{}').id_number;
     if (!db[id]) return send(422, { success: false, message: 'Verification Failed.', status_code: 422 });
@@ -92,7 +115,7 @@ const fake = http.createServer((req, res) => {
   assert.equal(c.docs.insurance.status, 'ok');
   assert.equal(c.docs.pucc.status, 'due'); assert.equal(c.docs.pucc.days_left, 10);
   assert.equal(c.docs.fitness.status, 'expired'); assert.equal(c.docs.fitness.days_left, -3);
-  assert.equal(c.docs.tax.status, 'unknown', 'LTT = lifetime tax, no date');
+  assert.equal(c.docs.tax.status, 'ok', 'LTT = lifetime tax, always valid'); assert.equal(c.tax_upto, LIFETIME);
   assert.equal(c.source, 'api'); assert.ok(c.fetched_at);
   assert.equal(list.find((v) => v.vehicle_id === van).docs.pucc.upto, plus(100), 'DD-MM-YYYY parsed');
   assert.match(list.find((v) => v.vehicle_id === bad).last_error, /Verification Failed/);
@@ -106,7 +129,7 @@ const fake = http.createServer((req, res) => {
   assert.equal((await driver(`/api/vehicles/${car}/summary`)).data.documents.docs.fitness.status, 'expired', 'driver sees on vehicle page');
 
   // Manual entry (no API needed); an API sync later keeps manual values the API does not have
-  const man = await admin(`/api/documents/${bad}`, 'PUT', { insurance_upto: '15/08/2027', pucc_upto: '2026-12-01', insurance_company: 'LIC' });
+  const man = await admin(`/api/documents/${bad}`, 'PUT', { insurance_upto: '15/08/2027', pucc_upto: '2027-12-01', insurance_company: 'LIC' });
   assert.equal(man.status, 200, JSON.stringify(man.data));
   assert.equal(man.data.insurance_upto, '2027-08-15'); assert.equal(man.data.source, 'manual');
   assert.equal((await admin(`/api/documents/${bad}`, 'PUT', { fitness_upto: '31-02-2026' })).status, 400);
@@ -121,12 +144,57 @@ const fake = http.createServer((req, res) => {
   const early = new Date(); early.setHours(5, 0, 0, 0);
   const later = new Date(); later.setHours(7, 0, 0, 0);
   assert.equal(await runDailyIfDue(early), null, 'not before 6 AM');
-  assert.ok(await runDailyIfDue(later), 'runs after 6 AM');
-  assert.equal(calls - before, 3, 'one lookup per vehicle');
+  // Smart sync: only the car (fitness expired, PUC due) – van and the third vehicle are up to date
+  const plan = server.documents.smartPlan();
+  assert.deepEqual(plan.filter((x) => x.lookup).map((x) => x.vehicle_id), [car]);
+  assert.match(plan.find((x) => x.vehicle_id === van).reason, /skipped/);
+  const smartRun = await runDailyIfDue(later);
+  assert.ok(smartRun, 'runs after 6 AM');
+  assert.deepEqual([smartRun.mode, smartRun.checked, smartRun.skipped], ['smart', 1, 2]);
+  assert.equal(calls - before, 1, 'one paid lookup instead of three');
   assert.equal(await runDailyIfDue(later), null, 'only once per day');
+  // Monthly refresh: a vehicle last checked 31 days ago is looked up again
+  require('../server.js').db.prepare(`UPDATE vehicle_docs SET fetched_at=? WHERE vehicle_id=?`).run(new Date(Date.now() - 31 * 864e5).toISOString(), van);
+  assert.match(server.documents.smartPlan().find((x) => x.vehicle_id === van).reason, /monthly check/);
+  // "Sync now" with smart=true from the page, and status shows the plan
+  const sm = await admin('/api/documents/sync', 'POST', { smart: true });
+  assert.equal(sm.data.checked, 2, 'car (still due) + van (monthly)');
+  assert.equal((await admin('/api/documents')).data.settings.next_run.lookups, 1);
+  // Mode "all": every vehicle every day
+  await admin('/api/documents/settings', 'PUT', { mode: 'all' });
+  require('../server.js').db.prepare(`DELETE FROM settings WHERE key='docs_auto_day'`).run();
+  const before2 = calls;
+  assert.equal((await runDailyIfDue(later)).checked, 3);
+  assert.equal(calls - before2, 3);
+  await admin('/api/documents/settings', 'PUT', { mode: 'smart' });
+
+  // RTO Sarthi provider (URL/header from their integration guide)
+  await admin('/api/documents/settings', 'PUT', { provider: 'rtosarthi' });
+  const noUrl = await admin('/api/documents/sync', 'POST', { vehicle_id: van });
+  assert.equal(noUrl.status, 400); assert.match(noUrl.data.error, /RTO Sarthi API URL/);
+  const rsSet = await admin('/api/documents/settings', 'PUT', { url: `http://127.0.0.1:${fake.address().port}/rtosarthi/v1/vehicle`,
+    auth_header: 'x-api-key', auth_prefix: '', key: 'RS-KEY-1', body: '{"vehicleNumber": "{vehicle_number}"}' });
+  assert.equal(rsSet.status, 200, JSON.stringify(rsSet.data)); assert.equal(rsSet.data.editable, true);
+  assert.equal((await admin('/api/documents/settings', 'PUT', { body: '{bad json' })).status, 400);
+  const rsOne = await admin('/api/documents/sync', 'POST', { vehicle_id: van });
+  assert.equal(rsOne.data.ok, true, JSON.stringify(rsOne.data));
+  const vanDocs = (await admin('/api/documents')).data;
+  const vrow = vanDocs.vehicles.find((v) => v.vehicle_id === van);
+  assert.deepEqual([vrow.insurance_upto, vrow.pucc_upto, vrow.tax_upto, vrow.insurance_company, vrow.rc_status],
+    [plus(400), plus(100), LIFETIME, 'ICICI LOMBARD GENERAL INSURANCE CO. LTD.', 'ACTIVE']);
+  assert.equal(vrow.docs.tax.status, 'ok', 'lifetime tax is valid');
+  assert.equal(vanDocs.settings.usage.remaining, 3758, 'prepaid balance shown');
+  delete db.XX00ZZ0000;
+  const rsBad = await admin('/api/documents/sync', 'POST', { vehicle_id: bad });
+  assert.equal(rsBad.data.ok, false); assert.match(rsBad.data.error, /Vehicle not found/);
+  // switching provider keeps each provider's own URL
+  await admin('/api/documents/settings', 'PUT', { provider: 'surepass' });
+  await admin('/api/documents/settings', 'PUT', { provider: 'rtosarthi' });
+  assert.match((await admin('/api/documents')).data.settings.url, /rtosarthi\/v1/);
 
   // Custom provider (GET with number in URL, own header)
-  await admin('/api/documents/settings', 'PUT', { provider: 'custom', url: 'ftp://x', key: KEY }).then((r) => assert.equal(r.status, 400));
+  await admin('/api/documents/settings', 'PUT', { provider: 'custom' });
+  await admin('/api/documents/settings', 'PUT', { url: 'ftp://x' }).then((r) => assert.equal(r.status, 400));
   await admin('/api/documents/settings', 'PUT', { provider: 'surepass' });
 
   console.log('✔ documents tests passed');

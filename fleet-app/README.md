@@ -46,12 +46,24 @@ The **Documents** page (admin) shows every vehicle's expiry dates for **insuranc
 
 Expired and expiring documents also appear as alerts on the dashboard (drivers see their own vehicle's) and on each vehicle's page.
 
-**Online update by vehicle number.** These details live in VAHAN (Parivahan), which has **no free public API**. Use a licensed **RC-verification API** provider, for example Surepass, Signzy, IDfy or Cashfree. Each lookup is a paid call.
-1. Sign up with a provider and get an API key.
-2. Go to **Documents → Online lookup settings**, choose the provider and paste the key:
-   - **Surepass** is set up already.
-   - **Other provider (custom)** lets you enter the URL, header and JSON body for any provider. The response is searched for the usual field names (`insurance_upto`, `pucc_upto`, `fit_up_to`, `tax_upto`, …).
-3. All active vehicles are then updated **every morning** (06:00 by default, configurable). You can also use **Sync all now**, or **🔄 Sync** on one vehicle.
+**Online update by vehicle number.** These details live in VAHAN (Parivahan), which has **no free public API**. Use a licensed **RC-verification API** provider. Each lookup is a paid call.
+
+| Provider in the app | Price | Set-up |
+|---|---|---|
+| **RTO Sarthi** (default) | from **₹1.5 per successful search**, prepaid, no monthly fee | Contact them (WhatsApp +91 62646 82508, rtosarthi@gmail.com) for a Vahan API key. Copy the **API URL**, **key header** and **request body** from the integration guide they send into the settings. The response format (`INSURANCE_UPTO`, `PUCC_UPTO`, `FIT_UPTO`, `TAX_UPTO`, `usage`…) is already understood. |
+| Surepass | contact sales | Paste the API token. Everything else is preset. |
+| Other provider (custom) | – | Enter the URL, header and JSON body for any provider. The usual field names are found automatically. |
+
+Go to **Documents → Online lookup settings**, choose the provider, fill in the details and save.
+
+**Smart sync** is the default and about 90% cheaper. Every morning (06:00 by default) it only looks up the vehicles that need it:
+- a document has **expired or expires within 30 days** (so the renewal shows up the next day)
+- the vehicle has **never been checked**
+- the vehicle **hasn't been checked for 30 days**
+
+Failed lookups (for example, a wrong vehicle number) are retried weekly. The Documents page shows tomorrow's lookup count, the estimated cost, the reason for each vehicle, and the **prepaid searches left** if the provider reports them. Use **Smart sync now** at any time, or **Sync all** to force every vehicle. You can also choose *Every vehicle, every day*.
+
+Lifetime road tax (`LTT`) is shown as **Lifetime**.
 
 **Without an API key**, click **✏️ Edit** and type the dates by hand. Typed dates are kept until an online update brings a value for that field.
 

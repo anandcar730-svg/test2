@@ -641,7 +641,7 @@ route('PUT', '/api/documents/settings', { auth: 'admin' }, ({ body }) => {
 });
 route('POST', '/api/documents/sync', { auth: 'admin' }, async ({ body }) => {
   if (body.vehicle_id) return documents.syncOne(Number(body.vehicle_id)).catch(docErr);
-  return documents.syncAll().catch(docErr);
+  return documents.syncAll({ smart: Boolean(body.smart) }).catch(docErr);
 });
 route('PUT', '/api/documents/:vehicleId', { auth: 'admin' }, ({ params, body }) => {
   try { return documents.updateManual(Number(params.vehicleId), body); } catch (e) { return docErr(e); }
