@@ -15,6 +15,7 @@ const { DatabaseSync } = require('node:sqlite');
 
 process.env.TZ = process.env.TZ || 'Asia/Kolkata'; // dates ("today", monthly totals) follow this time zone
 const PORT = Number(process.env.PORT) || 3000;
+const HOST = process.env.HOST || '0.0.0.0'; // use 127.0.0.1 when behind a reverse proxy (Caddy/Nginx)
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -337,7 +338,10 @@ const route = (method, pattern, opts, handler) => {
 };
 
 // --- auth
-route('POST', '/api/login', { auth: 'none' }, async ({ body, res }) => {
+// Add the Secure flag when served over HTTPS (directly or via a reverse proxy).
+const secure = (req) => (req.socket.encrypted || req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '');
+
+route('POST', '/api/login', { auth: 'none' }, async ({ req, body, res }) => {
   const user = get(`SELECT * FROM users WHERE username=?`, String(body.username || '').trim());
   if (!user || !user.active || !verifyPassword(body.password || '', user)) {
     throw new HttpError(401, 'Wrong username or password');
@@ -345,13 +349,13 @@ route('POST', '/api/login', { auth: 'none' }, async ({ body, res }) => {
   const token = crypto.randomBytes(32).toString('hex');
   run(`DELETE FROM sessions WHERE expires_at < ?`, Date.now());
   run(`INSERT INTO sessions (token,user_id,expires_at) VALUES (?,?,?)`, token, user.id, Date.now() + SESSION_DAYS * 864e5);
-  res.setHeader('Set-Cookie', `sid=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_DAYS * 86400}`);
+  res.setHeader('Set-Cookie', `sid=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_DAYS * 86400}${secure(req)}`);
   return { id: user.id, username: user.username, name: user.name, role: user.role };
 });
 route('POST', '/api/logout', { auth: 'none' }, ({ req, res }) => {
   const token = parseCookies(req).sid;
   if (token) run(`DELETE FROM sessions WHERE token=?`, token);
-  res.setHeader('Set-Cookie', 'sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+  res.setHeader('Set-Cookie', `sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure(req)}`);
   return { ok: true };
 });
 route('GET', '/api/me', ({ user }) => user);
@@ -650,6 +654,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (require.main === module) {
-  server.listen(PORT, () => console.log(`Fleet Driver Monitor running at http://localhost:${PORT}`));
+  server.listen(PORT, HOST, () => console.log(`Fleet Driver Monitor running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`));
 }
 module.exports = { server, db };

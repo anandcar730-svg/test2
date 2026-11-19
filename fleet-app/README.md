@@ -61,6 +61,8 @@ This is a server app because all drivers need to share one database. **It cannot
 
 Put it behind **HTTPS** (most hosts do this for you). The phone camera and GPS only work on HTTPS or on localhost.
 
+**Oracle Cloud (free VM):** step-by-step guide plus a one-command setup script in [`deploy/ORACLE-CLOUD.md`](deploy/ORACLE-CLOUD.md).
+
 ## How it's built
 
 - `server.js`: the Node HTTP server. It uses the built-in SQLite (`node:sqlite`) and scrypt password hashing, with HttpOnly session cookies.
