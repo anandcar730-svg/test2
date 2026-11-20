@@ -35,25 +35,26 @@ object Reminders {
     fun schedule(ctx: Context) {
         val js = ctx.getSystemService(JobScheduler::class.java) ?: return
         if (js.allPendingJobs.any { it.id == JOB_PERIODIC }) return
-        js.schedule(
+        // never let a scheduling problem stop the app from opening
+        try { js.schedule(
             JobInfo.Builder(JOB_PERIODIC, ComponentName(ctx, ReminderJob::class.java))
                 .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                 .setPersisted(true) // keep after the phone restarts
                 .setPeriodic(30 * 60 * 1000L)
                 .build()
-        )
+        ) } catch (e: Exception) { android.util.Log.w("DriverLog", "reminder job", e) }
     }
 
     /** Check within a minute (app opened / logged in). */
     fun checkSoon(ctx: Context) {
         val js = ctx.getSystemService(JobScheduler::class.java) ?: return
-        js.schedule(
+        try { js.schedule(
             JobInfo.Builder(JOB_NOW, ComponentName(ctx, ReminderJob::class.java))
                 .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                 .setMinimumLatency(2_000L)
                 .setOverrideDeadline(60_000L)
                 .build()
-        )
+        ) } catch (e: Exception) { android.util.Log.w("DriverLog", "reminder check", e) }
     }
 
     fun saveCookie(ctx: Context, cookie: String?) {
