@@ -166,3 +166,15 @@ details.card[open] > summary { margin-bottom: 10px; }
 .history li:last-child { border-bottom: 0; }
 table.facts th { width: 38%; text-transform: none; font-size: .85rem; letter-spacing: 0; }
 table.facts td { white-space: normal; overflow-wrap: anywhere; }
+
+/* notifications */
+.bell { position: relative; color: #fff; text-decoration: none; font-size: 1.25rem; padding: 4px 6px; }
+.bell span { position: absolute; top: -4px; right: -8px; background: var(--danger); color: #fff; border-radius: 99px;
+  font-size: .68rem; font-weight: 700; min-width: 18px; height: 18px; line-height: 18px; text-align: center; padding: 0 4px; }
+@media (max-width: 420px) { .topbar .uname { display: none; } }
+.notifs { list-style: none; padding: 0; margin: 0; }
+.notifs li a { display: flex; gap: 12px; padding: 12px 6px; border-bottom: 1px solid var(--line); color: var(--text); text-decoration: none; }
+.notifs li:last-child a { border-bottom: 0; }
+.notifs li.unread a { background: color-mix(in srgb, var(--brand-2) 8%, transparent); }
+.notifs li.unread b::before { content: '● '; color: var(--brand-2); }
+.notifs .ni { font-size: 1.4rem; line-height: 1.2; }

@@ -738,6 +738,45 @@ route('GET', '/api/fleet', ({ user }) => {
   });
 });
 
+// --- reminders: expiry / warranty dates → in-app notifications + phone push
+const DOC_NAMES = { insurance: 'Insurance', pucc: 'Pollution (PUC)', fitness: 'Fitness certificate', tax: 'Road tax', permit: 'Permit' };
+const whenText = (d) => (d < 0 ? `expired ${-d} day${d === -1 ? '' : 's'} ago` : d === 0 ? 'expires TODAY' : `expires in ${d} day${d === 1 ? '' : 's'}`);
+const niceDay = (iso) => new Date(iso + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+/** Everything that has a date (or km) to remind about, with who should hear about it. */
+function collectReminders() {
+  const t = today();
+  const admins = all(`SELECT id FROM users WHERE role='admin' AND active=1`).map((x) => x.id);
+  const activeDrivers = new Set(all(`SELECT id FROM users WHERE active=1`).map((x) => x.id));
+  const items = [];
+  for (const v of all(`SELECT * FROM vehicles WHERE active=1 ORDER BY reg_no`)) {
+    const to = [...new Set([...admins, ...(activeDrivers.has(v.assigned_driver_id) ? [v.assigned_driver_id] : [])])];
+    const url = `/#/vehicle/${v.id}`;
+    const doc = documents.forVehicle(v.id);
+    for (const [k, label] of Object.entries(DOC_NAMES)) {
+      const s = doc.docs?.[k];
+      if (!s?.upto || s.upto.startsWith('9999')) continue;
+      items.push({ key: `doc:${v.id}:${k}:${s.upto}`, kind: 'document', days_left: s.days_left, recipients: to, url,
+        title: `${v.reg_no}: ${label} ${whenText(s.days_left)}`,
+        body: `${label} valid till ${niceDay(s.upto)}${k === 'insurance' && doc.insurance_company ? ` (${doc.insurance_company})` : ''}. ${s.days_left < 0 ? 'Renew it now.' : 'Please renew in time.'}` });
+    }
+    for (const p of all(`SELECT * FROM vehicle_parts WHERE vehicle_id=? AND status='active' AND expiry_date IS NOT NULL`, v.id)) {
+      const d = Math.round((Date.parse(p.expiry_date + 'T00:00:00Z') - Date.parse(t + 'T00:00:00Z')) / 864e5);
+      const label = p.kind === 'battery' ? 'Battery warranty' : `${p.name}${p.kind === 'tyre' ? ' tyre warranty' : ''}`;
+      items.push({ key: `part:${p.id}:${p.expiry_date}`, kind: 'warranty', days_left: d, recipients: to, url,
+        title: `${v.reg_no}: ${label} ${whenText(d)}`,
+        body: `${[p.brand, p.serial_no && `S/N ${p.serial_no}`].filter(Boolean).join(' · ') || label} – valid till ${niceDay(p.expiry_date)}.` });
+    }
+    const oil = oilStatus(v);
+    if (oil.oil_status === 'overdue' || oil.oil_status === 'due_soon') {
+      items.push({ key: `oil:${v.id}:${oil.oil_due_km}`, kind: 'oil', stage: oil.oil_status, recipients: to, url,
+        title: `${v.reg_no}: Oil change ${oil.oil_status === 'overdue' ? `OVERDUE by ${Math.round(-oil.oil_remaining_km)} km` : `due in ${Math.round(oil.oil_remaining_km)} km`}`,
+        body: `Due at ${Math.round(oil.oil_due_km)} km, odometer now ${Math.round(oil.current_km)} km.` });
+    }
+  }
+  return items;
+}
+const notifications = require('./notifications')({ db, all, get, run, route, today, bad, str, collect: collectReminders });
+
 // --- one vehicle: everything about it
 route('GET', '/api/vehicles/:id/summary', ({ user, params, query }) => {
   const v = get(`SELECT v.*, u.name AS driver_name, u.phone AS driver_phone FROM vehicles v
@@ -956,7 +995,9 @@ const server = http.createServer(async (req, res) => {
     if (!file.startsWith(PUBLIC_DIR)) return send(res, 400, 'Bad path');
     // index.html must always be fresh (it points to versioned app.js?v=N / styles.css?v=N)
     const noCache = { 'Cache-Control': 'no-cache' };
-    if (fs.existsSync(file) && fs.statSync(file).isFile()) return serveFile(res, file, file.endsWith('.html') ? noCache : {});
+    if (fs.existsSync(file) && fs.statSync(file).isFile()) {
+      return serveFile(res, file, file.endsWith('.html') || file.endsWith('sw.js') ? noCache : {});
+    }
     return serveFile(res, path.join(PUBLIC_DIR, 'index.html'), noCache);
   } catch (err) {
     const status = err.status || 500;
@@ -969,4 +1010,5 @@ if (require.main === module) {
   server.listen(PORT, HOST, () => console.log(`Fleet Driver Monitor running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`));
 }
 server.documents = documents; // exposed for tests
+server.notifications = notifications;
 module.exports = { server, db };

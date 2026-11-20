@@ -218,6 +218,8 @@ pages.dashboard = async (main) => {
     ${alerts.map((v) => `<div class="alert ${v.oil_status === 'overdue' ? 'danger' : 'warn'}">
       🛢 <b>${esc(v.reg_no)}</b>: oil change ${v.oil_status === 'overdue'
         ? `<b>overdue by ${fmt(-v.oil_remaining_km)} km</b>` : `due in ${fmt(v.oil_remaining_km)} km`} (at ${fmt(v.oil_due_km)} km)</div>`).join('')}
+    ${pushSupported() && Notification.permission === 'default' ? `<div class="alert" style="border-color:var(--brand-2)">🔔 Get reminders for insurance, PUC, fitness and warranty dates
+      on this ${/Android|iPhone/.test(navigator.userAgent) ? 'phone' : 'device'}. <a href="#/notifications">Turn on notifications</a></div>` : ''}
     ${(d.checks_today || []).filter((c) => !c.done && (isAdmin || c.assigned_driver_id === state.user.id)).length && !isAdmin
       ? `<div class="alert warn">✅ Daily oil &amp; coolant check not done yet today. <a href="#/trips">Check now</a></div>` : ''}
     ${(d.fluid_alerts || []).map((c) => `<div class="alert ${c.oil === 'low' ? 'danger' : 'warn'}">🛢 <b>${esc(c.reg_no)}</b>: ${[c.oil === 'low' ? 'engine oil LOW' : '',
@@ -1494,10 +1496,126 @@ function renderLogin() {
   }); };
 }
 
+// ================================================================== notifications: bell, page, phone push
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
+const isStandalone = () => window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
+const b64uToU8 = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+const u8ToB64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+function deviceName() {
+  const ua = navigator.userAgent;
+  const os = /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iPhone' : /Windows/.test(ua) ? 'Windows' : /Mac/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : 'Device';
+  const br = /Edg\//.test(ua) ? 'Edge' : /SamsungBrowser/.test(ua) ? 'Samsung Internet' : /Firefox/.test(ua) ? 'Firefox' : /Chrome/.test(ua) ? 'Chrome' : /Safari/.test(ua) ? 'Safari' : 'browser';
+  return `${os} · ${br}`;
+}
+async function currentPushSub() {
+  if (!pushSupported()) return null;
+  const reg = await navigator.serviceWorker.getRegistration('/');
+  return reg ? reg.pushManager.getSubscription() : null;
+}
+/** Turn on push for this device (asks the browser for permission the first time). */
+async function enablePush({ quiet = false } = {}) {
+  if (!pushSupported()) {
+    throw new Error(isIOS() && !isStandalone()
+      ? 'On iPhone: tap Share ⬆️ → "Add to Home Screen", open Fleet Monitor from the home screen, then turn notifications on there.'
+      : 'This browser cannot show notifications. Use Chrome, Edge, Firefox or Samsung Internet.');
+  }
+  if (!quiet && Notification.permission !== 'granted') {
+    const p = await Notification.requestPermission();
+    if (p !== 'granted') throw new Error('Notifications are blocked for this site. Allow them in the browser\'s site settings (🔒 next to the address).');
+  }
+  if (Notification.permission !== 'granted') return false;
+  const reg = await navigator.serviceWorker.register('/sw.js');
+  await navigator.serviceWorker.ready;
+  const { publicKey } = await api('/api/push/key');
+  let sub = await reg.pushManager.getSubscription();
+  if (sub && sub.options?.applicationServerKey && u8ToB64u(sub.options.applicationServerKey) !== publicKey) { await sub.unsubscribe(); sub = null; }
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToU8(publicKey) });
+  await api('/api/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON(), device: deviceName() } });
+  return true;
+}
+async function disablePush() {
+  const sub = await currentPushSub();
+  if (sub) {
+    await api('/api/push/unsubscribe', { method: 'POST', body: { endpoint: sub.endpoint } }).catch(() => {});
+    await sub.unsubscribe();
+  }
+}
+async function updateBell() {
+  const el = $('#bellcount');
+  if (!el || !state.user) return;
+  try {
+    const { unread } = await api('/api/notifications/count');
+    el.textContent = unread > 99 ? '99+' : String(unread);
+    el.hidden = !unread;
+  } catch { /* offline */ }
+}
+setInterval(updateBell, 5 * 60e3);
+const notifIcon = (k) => ({ document: '📄', warranty: '🔋', oil: '🛢' }[k] || '🔔');
+
+pages.notifications = async (main) => {
+  const admin = state.user.role === 'admin';
+  const [d, st, sub] = await Promise.all([api('/api/notifications'), admin ? api('/api/notifications/settings') : null, currentPushSub().catch(() => null)]);
+  const onHere = Boolean(sub) && typeof Notification !== 'undefined' && Notification.permission === 'granted';
+  const blocked = typeof Notification !== 'undefined' && Notification.permission === 'denied';
+  const ago = (iso) => dateTime(iso);
+  main.innerHTML = `<div class="row"><h1 style="margin:0">🔔 Notifications</h1><span class="spacer"></span>
+      ${d.unread ? '<button id="readall">✓ Mark all as read</button>' : ''}</div>
+    <p class="muted">Reminders for insurance, pollution (PUC), fitness, road tax, permit, battery &amp; part warranties and oil changes –
+      ${admin ? 'all vehicles' : 'your vehicle'}. Sent ${st ? st.days.split(',').map((x) => (x === '0' ? 'on the day' : `${x}`)).join(', ').replace(/, on the day$/, ' days before and on the day') : '30, 15, 7, 3, 1 days before and on the day'}, then weekly while expired.</p>
+
+    <div class="card"><h2>📱 Notifications on this phone / computer</h2>
+      ${onHere ? `<p>✅ <b>On</b> for this device (${esc(deviceName())}). Reminders pop up even when the website is closed.</p>`
+        : blocked ? '<div class="alert warn">Notifications are <b>blocked</b> for this site. Open the browser\'s site settings (🔒 next to the address) → Notifications → Allow, then reload.</div>'
+        : !pushSupported() && isIOS() && !isStandalone() ? `<div class="alert warn"><b>iPhone:</b> tap <b>Share ⬆️ → Add to Home Screen</b>, then open Fleet Monitor from the
+            home screen and turn notifications on there (needs iOS 16.4 or newer).</div>`
+        : '<p class="muted">Off on this device. Turn it on to get reminders like a WhatsApp message.</p>'}
+      <div class="actions">
+        ${onHere ? '<button id="ptest" class="primary">Send a test notification</button><button id="poff">Turn off on this device</button>'
+          : `<button id="pon" class="primary" ${blocked ? 'disabled' : ''}>🔔 Turn on notifications</button>`}
+      </div>
+      ${d.devices.length ? `<p class="muted" style="margin-bottom:4px">Your devices with notifications on:</p><ul class="history">${d.devices.map((x) => `<li>
+          📱 ${esc(x.device || 'Device')} <small class="muted">· since ${ago(x.created_at)}${x.last_ok_at ? ` · last delivered ${ago(x.last_ok_at)}` : ''}</small>
+          ${x.last_error ? `<br><small style="color:var(--danger)">⚠ ${esc(x.last_error)}</small>` : ''}
+          <button class="small" data-rmdev="${x.id}" style="float:right">Remove</button></li>`).join('')}</ul>` : ''}
+    </div>
+
+    <div class="card"><h2>Reminders ${d.unread ? `<span class="badge danger">${d.unread} new</span>` : ''}</h2>
+      ${d.items.length ? `<ul class="notifs">${d.items.map((n) => `<li class="${n.read_at ? '' : 'unread'}"><a href="${esc(n.url || '#/notifications')}" data-nid="${n.id}">
+          <span class="ni">${notifIcon(n.kind)}</span><span><b>${esc(n.title)}</b>${n.body ? `<br><span class="muted">${esc(n.body)}</span>` : ''}
+          <br><small class="muted">${ago(n.created_at)}</small></span></a></li>`).join('')}</ul>`
+        : '<p class="muted">No reminders yet. They appear here when a date is 30 days away or less.</p>'}
+    </div>
+
+    ${admin ? `<div class="card"><h2>⚙️ Reminder settings</h2><form id="nsf"><div class="fields">
+        <label><span>Remind this many days before</span><input name="days" value="${esc(st.days.split(',').join(', '))}">
+          <small class="muted">0 = on the day. After expiry a reminder is repeated every week.</small></label>
+        <label><span>Send reminders at</span><select name="hour">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === st.hour ? 'selected' : ''}>${String(h).padStart(2, '0')}:00</option>`).join('')}</select></label>
+      </div><div class="actions"><button class="primary" type="submit">Save</button><button type="button" id="nrun">🔄 Check for reminders now</button></div></form>
+      <p class="muted" style="margin-bottom:0">${st.last_run ? `Last check: ${ago(st.last_run.at)} – ${st.last_run.created} new reminder(s), ${st.last_run.pushed} sent to phones.` : 'Not checked yet.'}
+        ${st.users_with_devices} user(s) have notifications on (${st.devices} device(s)).</p></div>` : ''}`;
+
+  const btn = (sel, fn) => { const b = $(sel, main); if (b) b.onclick = async () => { b.disabled = true; try { await fn(); } catch (e) { toast(e.message, true); } finally { b.disabled = false; } }; };
+  btn('#pon', async () => { await enablePush(); toast('Notifications are on for this device ✅'); route(); });
+  btn('#poff', async () => { await disablePush(); toast('Notifications turned off on this device'); route(); });
+  btn('#ptest', async () => { const r = await api('/api/push/test', { method: 'POST' }); toast(`Test sent to ${r.sent} device(s)${r.failed ? `, ${r.failed} failed` : ''}`); });
+  btn('#readall', async () => { await api('/api/notifications/read', { method: 'POST', body: {} }); route(); });
+  btn('#nrun', async () => { const r = await api('/api/notifications/run', { method: 'POST' }); toast(`${r.created} new reminder(s), ${r.pushed} sent to phones`); route(); });
+  for (const b of $$('[data-rmdev]', main)) b.onclick = async () => { await api('/api/push/unsubscribe', { method: 'POST', body: { id: b.dataset.rmdev } }); route(); };
+  for (const a of $$('[data-nid]', main)) a.addEventListener('click', () => { api('/api/notifications/read', { method: 'POST', body: { id: a.dataset.nid } }).then(updateBell).catch(() => {}); });
+  const nsf = $('#nsf', main);
+  if (nsf) nsf.onsubmit = (e) => { e.preventDefault(); submitting(nsf, async () => {
+    await api('/api/notifications/settings', { method: 'PUT', body: { days: nsf.days.value, hour: Number(nsf.hour.value) } });
+    toast('Reminder settings saved'); route();
+  }); };
+  if (d.unread) setTimeout(updateBell, 0);
+};
+
 function renderShell() {
   const items = NAV.filter((n) => !n[3] || n[3] === state.user.role);
   $('#app').innerHTML = `<header class="topbar"><span class="title">🚐 Fleet Monitor</span>
-      <span class="muted" style="color:#ccfbf1">${esc(state.user.name)}</span><button id="lo">Log out</button></header>
+      <a class="bell" href="#/notifications" title="Notifications" aria-label="Notifications">🔔<span id="bellcount" hidden></span></a>
+      <span class="muted uname" style="color:#ccfbf1">${esc(state.user.name)}</span><button id="lo">Log out</button></header>
     <div class="shell"><nav class="side">${items.map(([k, i, l]) => `<a href="#/${k}" data-nav="${k}"><span class="ico">${i}</span>${l}</a>`).join('')}</nav>
     <main id="main"></main></div>`;
   $('#lo').onclick = async () => { await api('/api/logout', { method: 'POST' }).catch(() => {}); state.user = null; render(); };
@@ -1507,7 +1625,7 @@ async function route() {
   if (!state.user) return;
   let [page, param] = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/');
   const nav = NAV.find((n) => n[0] === page);
-  const hidden = param && (page === 'vehicle' || page === 'vehicle-edit'); // pages without a menu entry
+  const hidden = (param && (page === 'vehicle' || page === 'vehicle-edit')) || page === 'notifications'; // pages without a menu entry
   if (!hidden && (!nav || (nav[3] && nav[3] !== state.user.role))) page = 'dashboard';
   const activeNav = page === 'vehicle' || page === 'vehicle-edit' ? 'vehicles' : page;
   $$('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === activeNav));
@@ -1517,6 +1635,7 @@ async function route() {
     if (state.user.role === 'admin' && !state.drivers) state.drivers = await api('/api/drivers');
     if (!state.vehicles.length) await refreshVehicles();
     await pages[page](main, param ? decodeURIComponent(param) : undefined);
+    updateBell();
   } catch (e) { main.innerHTML = `<div class="alert danger">${esc(e.message)}</div>`; }
   window.scrollTo(0, 0);
 }
@@ -1528,6 +1647,7 @@ async function render() {
   if (!state.user) { state.vehicles = []; state.drivers = null; return renderLogin(); }
   renderShell();
   route();
+  if (pushSupported() && Notification.permission === 'granted') enablePush({ quiet: true }).catch(() => {});
 }
 window.addEventListener('hashchange', route);
 render();

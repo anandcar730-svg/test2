@@ -93,6 +93,22 @@ These are on each **vehicle page**:
   - The admin sets the status: *Open → In progress → Resolved / Rejected*, with notes.
   - Drivers see their own complaints and the ones about them.
 
+## Notifications for expiry and warranty dates
+Reminders cover **insurance, PUC, fitness, road tax, permit, battery / tyre / part warranties** and **oil change due**:
+- **When:** 30, 15, 7, 3 and 1 days before, on the day, then **weekly while expired**. The admin can change these days and the time (08:00 by default).
+- **Who:** the admin gets reminders for all vehicles; a driver gets reminders for their assigned vehicle.
+- **Where:**
+  - the **🔔 bell** in the top bar (with an unread count) and the Notifications page
+  - **push notifications on phones and computers**, even when the site is closed, using the browser's built-in Web Push. No SMS or WhatsApp service and no extra cost.
+- **Turning it on:**
+  - **Android / computer:** open **🔔 → Turn on notifications** and allow them.
+  - **iPhone (iOS 16.4+):** first **Share → Add to Home Screen**, open the app from the home screen, then turn notifications on.
+- **Details:**
+  - A renewed document (new date) starts its own reminders.
+  - Missed days (server down) are caught up the next morning.
+  - The push keys are created automatically and stored in the database.
+  - Push needs HTTPS, which the Oracle/Cloudflare set-up provides.
+
 ## Vehicles section (everyone)
 **🚐 Vehicles** in the menu shows every vehicle as a card: photo, number, model, colour, seats, driver and odometer, plus status chips. The chips cover:
 - papers expired or due
