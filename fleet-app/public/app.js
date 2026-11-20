@@ -1,5 +1,5 @@
 'use strict';
-/* Fleet Driver Monitor — single-page front end (no framework). */
+/* Driver Log Shalom — single-page front end (no framework). */
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -315,6 +315,7 @@ pages.trips = async (main) => {
         ...(pos ? { end_lat: pos.coords.latitude, end_lng: pos.coords.longitude, end_accuracy: Math.round(pos.coords.accuracy) } : {}) } });
       await flushGps();
       if (String(tracker.tripId) === f.dataset.end) stopTracking(!tracker.queue.length);
+      stopNativeTracking();
       toast(`Trip ended – ${fmt(r.distance_km, 1)} km driven. Location sharing stopped.`); route();
     }); };
   }
@@ -326,7 +327,7 @@ pages.trips = async (main) => {
       const r = await api('/api/trips', { method: 'POST', body: { ...formData(start), start_photo: start._photos.start_photo[0],
         ...(pos ? { start_lat: pos.coords.latitude, start_lng: pos.coords.longitude, start_accuracy: Math.round(pos.coords.accuracy) } : {}) } });
       const reg = start.vehicle_id.selectedOptions[0]?.textContent.split(' – ')[0] || '';
-      startTracking(r.id, reg);
+      await startTripTracking(r.id, reg);
       toast(pos ? 'Trip started – location sharing is on. Drive safe!' : 'Trip started. Location was not shared – allow location to track the route.', !pos);
       route();
     }); };
@@ -1227,7 +1228,7 @@ pages.loyverse = async (main) => {
     <div class="card"><h2>1. Connect</h2>
       ${st.connected ? `<p>✅ Connected (token ${esc(st.token_hint)}) · Auto-sync <b>${st.enabled ? 'on' : 'off'}</b></p>` : `
       <ol class="muted"><li>Open <b>Loyverse Back Office</b> (r.loyverse.com) on a computer.</li>
-        <li>Go to <b>Settings → Access tokens → + Add access token</b>, name it "Fleet", Save.</li>
+        <li>Go to <b>Settings → Access tokens → + Add access token</b>, name it "Driver Log Shalom", Save.</li>
         <li>Copy the token and paste it here.</li></ol>`}
       <form id="cf"><div class="fields">
         <label><span>${st.connected ? 'Replace access token' : 'Access token'}</span><input name="token" autocomplete="off" placeholder="paste token here"></label>
@@ -1511,10 +1512,30 @@ pages.profile = async (main) => {
 
 /** Set-up card for Traccar Client – free GPS app that keeps sending the location with the screen off. */
 function renderBgTracking(box, t) {
+  const app = nativeApp();
+  if (app) {
+    const st = nativeStatus();
+    const optimised = (() => { try { return app.batteryOptimised(); } catch { return false; } })();
+    box.innerHTML = `<h2>📡 Background location</h2>
+      <p>✅ You are using the <b>Driver Log Shalom app</b> (version ${esc(app.version())}). During a trip your location is shared
+        <b>with the screen off</b> too – a notification "Driver Log Shalom – sharing location" shows while it runs, and it stops at <b>End trip</b>.</p>
+      <p>Now: ${st.active ? `<span class="badge ok">sharing</span> ${st.sent || 0} points sent${st.queued ? `, ${st.queued} waiting for signal` : ''}` : '<span class="badge">not on a trip</span>'}</p>
+      ${optimised ? `<div class="alert warn">Battery saving may stop the app in the background on some phones (Xiaomi, Oppo, Vivo, Samsung…).
+        <button class="small primary" id="batt" style="margin-left:6px">Allow background use</button></div>` : '<p class="muted">✅ Battery optimisation is off for the app.</p>'}`;
+    const b = $('#batt', box);
+    if (b) b.onclick = () => app.openBatterySettings();
+    return;
+  }
   const server = `${location.origin}/api/osmand`;
   const android = /Android/.test(navigator.userAgent), ios = /iPhone|iPad/.test(navigator.userAgent);
   const copy = (txt) => `<button type="button" class="small" data-copy="${esc(txt)}">📋 Copy</button>`;
+  const isAndroid = /Android/.test(navigator.userAgent);
   box.innerHTML = `<h2>📡 Background location (screen off)</h2>
+    <div class="alert" style="border-color:var(--brand-2)"><b>📱 Recommended: the Driver Log Shalom app${isAndroid ? '' : ' (Android)'}.</b>
+      It opens this website and shares your trip location with the screen off – nothing to set up.<br>
+      <a class="btn small primary" style="margin-top:8px" href="${APP_APK_URL}">⬇ Download the Android app (APK)</a>
+      <small class="muted" style="display:block;margin-top:6px">Open the downloaded file and allow "Install unknown apps" when the phone asks. iPhone: use Traccar Client below.</small></div>
+    <p class="muted"><b>Or</b> use the free Traccar Client app:</p>
     <p>A website can only use GPS while it is open on the screen – phones block it in the background. To keep sharing your location
       with the <b>screen off</b> during trips, install the free <b>Traccar Client</b> app once:</p>
     <ol class="steps">
@@ -1555,7 +1576,7 @@ const NAV = [
 
 function renderLogin() {
   $('#app').innerHTML = `<div class="login card">
-    <img class="logo" src="/icon.svg" alt=""><h1>Fleet Driver Monitor</h1>
+    <img class="logo" src="/icon.svg" alt=""><h1>Driver Log Shalom</h1>
     <p class="muted">Log in with the username and password given by your fleet admin.</p>
     <form id="lf"><div class="fields" style="grid-template-columns:1fr">
       <label><span>Username</span><input name="username" required autocapitalize="off" autocomplete="username"></label>
@@ -1590,7 +1611,7 @@ async function currentPushSub() {
 async function enablePush({ quiet = false } = {}) {
   if (!pushSupported()) {
     throw new Error(isIOS() && !isStandalone()
-      ? 'On iPhone: tap Share ⬆️ → "Add to Home Screen", open Fleet Monitor from the home screen, then turn notifications on there.'
+      ? 'On iPhone: tap Share ⬆️ → "Add to Home Screen", open Driver Log Shalom from the home screen, then turn notifications on there.'
       : 'This browser cannot show notifications. Use Chrome, Edge, Firefox or Samsung Internet.');
   }
   if (!quiet && Notification.permission !== 'granted') {
@@ -1641,7 +1662,9 @@ pages.notifications = async (main) => {
     <div class="card"><h2>📱 Notifications on this phone / computer</h2>
       ${onHere ? `<p>✅ <b>On</b> for this device (${esc(deviceName())}). Reminders pop up even when the website is closed.</p>`
         : blocked ? '<div class="alert warn">Notifications are <b>blocked</b> for this site. Open the browser\'s site settings (🔒 next to the address) → Notifications → Allow, then reload.</div>'
-        : !pushSupported() && isIOS() && !isStandalone() ? `<div class="alert warn"><b>iPhone:</b> tap <b>Share ⬆️ → Add to Home Screen</b>, then open Fleet Monitor from the
+        : nativeApp() ? `<div class="alert">Inside the Driver Log Shalom app, reminders appear here and on the 🔔 bell. To also get pop-ups when the app is closed,
+            open <b>${esc(location.host)}</b> once in <b>Chrome</b> and turn notifications on there.</div>`
+        : !pushSupported() && isIOS() && !isStandalone() ? `<div class="alert warn"><b>iPhone:</b> tap <b>Share ⬆️ → Add to Home Screen</b>, then open Driver Log Shalom from the
             home screen and turn notifications on there (needs iOS 16.4 or newer).</div>`
         : '<p class="muted">Off on this device. Turn it on to get reminders like a WhatsApp message.</p>'}
       <div class="actions">
@@ -1758,8 +1781,52 @@ function stopTracking(clear = true) {
   renderGpsBar();
 }
 window.addEventListener('online', () => flushGps());
+// ---- inside the Driver Log Shalom Android app, background location is done by the app itself
+const APP_APK_URL = 'https://github.com/anandcar730-svg/test2/releases/download/android-app/driver-log-shalom.apk';
+const nativeApp = () => (window.DriverLogApp && typeof window.DriverLogApp.startTracking === 'function' ? window.DriverLogApp : null);
+const nativeStatus = () => { try { return JSON.parse(nativeApp()?.status() || '{}'); } catch { return {}; } };
+let nativeTimer = null;
+/** Start trip location: the app (screen-off capable) when available, otherwise the browser. */
+async function startTripTracking(tripId, reg) {
+  const app = nativeApp();
+  if (app) {
+    try {
+      const t = await api('/api/me/tracking');
+      app.startTracking(t.device_id, `${location.origin}/api/osmand`, reg);
+      tracker.native = { tripId, reg };
+      clearInterval(nativeTimer);
+      nativeTimer = setInterval(renderGpsBar, 15000);
+      renderGpsBar();
+      return;
+    } catch { /* fall back to the browser */ }
+  }
+  startTracking(tripId, reg);
+}
+function stopNativeTracking() {
+  const app = nativeApp();
+  if (app && tracker.native) { try { app.stopTracking(); } catch { /* ignore */ } }
+  tracker.native = null;
+  clearInterval(nativeTimer);
+  renderGpsBar();
+}
+window.onDriverLogApp = (event) => {
+  if (event === 'denied') { toast('Location permission is needed to record the trip route', true); tracker.native = null; renderGpsBar(); }
+  if (event === 'resume') { renderGpsBar(); if (state.user) resumeTracking(); }
+};
+
 function renderGpsBar() {
   let bar = $('#gpsbar');
+  if (tracker.native) {
+    if (!bar) { bar = document.createElement('div'); bar.id = 'gpsbar'; bar.setAttribute('role', 'status'); $('.topbar')?.after(bar); if (!bar.isConnected) return; }
+    const st = nativeStatus();
+    const ago = st.last_fix ? Math.max(0, Math.round((Date.now() - st.last_fix) / 1000)) : null;
+    bar.className = st.active === false ? 'warn' : '';
+    bar.innerHTML = st.active === false
+      ? `⚠️ <b>${esc(tracker.native.reg)}</b>: location sharing is not running – allow location for Driver Log Shalom`
+      : `<span class="pulse"></span> <b>Location sharing on</b> · ${esc(tracker.native.reg)} · ${ago === null ? 'finding GPS…' : `GPS ${ago < 60 ? `${ago}s` : `${Math.round(ago / 60)} min`} ago`}
+         · ${st.sent || 0} sent${st.queued ? `, ${st.queued} waiting` : ''}<small>📱 App – keeps working with the screen off · stops at End trip</small>`;
+    return;
+  }
   if (!tracker.tripId) { bar?.remove(); return; }
   if (!bar) {
     bar = document.createElement('div');
@@ -1781,6 +1848,14 @@ function renderGpsBar() {
 async function resumeTracking() {
   try {
     const open = await api('/api/trips/open');
+    const app = nativeApp();
+    if (app) {
+      if (open.length) {
+        if (!app.isTracking()) await startTripTracking(open[0].id, open[0].reg_no);
+        else { tracker.native = { tripId: open[0].id, reg: open[0].reg_no }; clearInterval(nativeTimer); nativeTimer = setInterval(renderGpsBar, 15000); renderGpsBar(); }
+      } else if (app.isTracking()) { tracker.native = { tripId: null, reg: '' }; stopNativeTracking(); }
+      return;
+    }
     if (open.length) startTracking(open[0].id, open[0].reg_no); else if (tracker.tripId) stopTracking(true);
   } catch { /* ignore */ }
 }
@@ -1976,7 +2051,7 @@ document.addEventListener('click', (e) => {
 
 function renderShell() {
   const items = NAV.filter((n) => !n[3] || n[3] === state.user.role);
-  $('#app').innerHTML = `<header class="topbar"><span class="title">🚐 Fleet Monitor</span>
+  $('#app').innerHTML = `<header class="topbar"><span class="title">🚐 Driver Log Shalom</span>
       <a class="bell" href="#/notifications" title="Notifications" aria-label="Notifications">🔔<span id="bellcount" hidden></span></a>
       <span class="muted uname" style="color:#ccfbf1">${esc(state.user.name)}</span><button id="lo">Log out</button></header>
     <div class="shell"><nav class="side">${items.map(([k, i, l]) => `<a href="#/${k}" data-nav="${k}"><span class="ico">${i}</span>${l}</a>`).join('')}</nav>

@@ -92,7 +92,7 @@ module.exports = function createReports({ all, get, route, bad, HttpError, FUELS
   };
 
   // ------------------------------------------------------------------ PDF
-  const orgName = () => getSetting('org_name') || 'Fleet Driver Monitor';
+  const orgName = () => getSetting('org_name') || 'Shalom Church';
   function headerBand(pdf, title, subtitle) {
     pdf.rect(0, 0, pdf.W, 74, { fill: TEAL });
     pdf.text(pdf.margin, 16, orgName().toUpperCase(), { size: 8.5, bold: true, color: [153, 246, 228] });

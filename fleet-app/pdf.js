@@ -135,7 +135,7 @@ class PDF {
     objs[pagesObj - 1] = `<< /Type /Pages /Kids [${kids.map((k) => `${k} 0 R`).join(' ')}] /Count ${kids.length} >>`;
     // document info uses PDFDocEncoding, not WinAnsi – keep it to plain ASCII
     const ascii = (t) => encode(String(t).replace(/[–—]/g, '-').replace(/[‘’]/g, "'").replace(/[“”]/g, '"')).map((c) => (c < 127 ? c : 63));
-    const info = add(`<< /Title ${pdfString(ascii(this.title))} /Author ${pdfString(ascii(this.author))} /Producer (Fleet Driver Monitor) /CreationDate (D:${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)}Z) >>`);
+    const info = add(`<< /Title ${pdfString(ascii(this.title))} /Author ${pdfString(ascii(this.author))} /Producer (Driver Log Shalom) /CreationDate (D:${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)}Z) >>`);
     const chunks = [Buffer.from('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n', 'latin1')];
     let offset = chunks[0].length;
     const offsets = [];

@@ -1,6 +1,6 @@
 {
-  "name": "Fleet Driver Monitor",
-  "short_name": "Fleet",
+  "name": "Driver Log Shalom",
+  "short_name": "Driver Log",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f4f6f8",

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Fleet Driver Monitor — zero-dependency Node.js server (Node >= 22.13).
+ * Driver Log Shalom — zero-dependency Node.js server (Node >= 22.13).
  *
  * Stores everything in SQLite (node:sqlite) under ./data and photos under ./data/uploads.
  * Roles:
@@ -1062,7 +1062,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (require.main === module) {
-  server.listen(PORT, HOST, () => console.log(`Fleet Driver Monitor running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`));
+  server.listen(PORT, HOST, () => console.log(`Driver Log Shalom running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`));
 }
 server.documents = documents; // exposed for tests
 server.notifications = notifications;

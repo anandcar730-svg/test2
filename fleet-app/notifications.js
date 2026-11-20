@@ -89,7 +89,7 @@ module.exports = function createNotifications({ db, all, get, run, route, today,
   }
   function vapidAuth(endpoint) {
     const v = vapid();
-    const subject = getSetting('site_url') || 'mailto:admin@fleet-monitor.app';
+    const subject = getSetting('site_url') || 'mailto:admin@driver-log-shalom.app';
     const head = b64u(JSON.stringify({ typ: 'JWT', alg: 'ES256' }));
     const claims = b64u(JSON.stringify({ aud: new URL(endpoint).origin, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: subject }));
     const sig = crypto.sign('sha256', Buffer.from(`${head}.${claims}`), { key: v.key, dsaEncoding: 'ieee-p1363' });
@@ -147,7 +147,7 @@ module.exports = function createNotifications({ db, all, get, run, route, today,
       created += items.length;
       const msg = items.length === 1
         ? { title: items[0].title, body: items[0].body || '', url: items[0].url || '/#/notifications', tag: items[0].key }
-        : { title: `🔔 ${items.length} reminders – Fleet Monitor`, body: items.slice(0, 4).map((i) => `• ${i.title}`).join('\n') + (items.length > 4 ? `\n…and ${items.length - 4} more` : ''),
+        : { title: `🔔 ${items.length} reminders – Driver Log Shalom`, body: items.slice(0, 4).map((i) => `• ${i.title}`).join('\n') + (items.length > 4 ? `\n…and ${items.length - 4} more` : ''),
           url: '/#/notifications', tag: 'fleet-digest' };
       pushed += (await pushToUser(uid, msg)).sent;
     }
