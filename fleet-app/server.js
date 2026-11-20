@@ -387,8 +387,10 @@ const JOIN_NAMES = (a) => `JOIN users u ON u.id=${a}.driver_id JOIN vehicles v O
 const listers = {
   trips(user, query) {
     const f = listFilters(user, query, 't.date');
-    return all(`SELECT t.*, (t.end_km - t.start_km) AS distance_km, u.name AS driver_name, v.reg_no
+    const rows = all(`SELECT t.*, (t.end_km - t.start_km) AS distance_km, u.name AS driver_name, v.reg_no
                 FROM trips t ${JOIN_NAMES('t')} ${f.sql} ORDER BY t.date DESC, t.id DESC LIMIT 1000`, f.params);
+    const gps = tracking.pointCounts(rows.map((r) => r.id));
+    return rows.map((r) => ({ ...r, gps_points: gps[r.id] || 0 }));
   },
   fuel(user, query) {
     const f = listFilters(user, query, 't.date', 't', { fuel: true });
@@ -560,6 +562,7 @@ route('POST', '/api/trips', ({ user, body }) => {
   if (start < current) bad(`Starting kilometer cannot be lower than the last reading (${current} km)`);
   const r = run(`INSERT INTO trips (driver_id,vehicle_id,date,start_km,start_photo,notes) VALUES (?,?,?,?,?,?)`,
     user.id, v.id, body.date ? isoDate(body.date) : today(), start, saveImage(body.start_photo), str(body.notes, 'Notes'));
+  tracking.onStart(Number(r.lastInsertRowid), body); // GPS position at the start (if the phone shared it)
   return { id: Number(r.lastInsertRowid) };
 });
 route('PUT', '/api/trips/:id/end', ({ user, params, body }) => {
@@ -572,6 +575,7 @@ route('PUT', '/api/trips/:id/end', ({ user, params, body }) => {
   if (end - t.start_km > 2000) bad('More than 2000 km in one trip — please check the reading');
   run(`UPDATE trips SET end_km=?, end_photo=?, notes=COALESCE(?,notes), ended_at=datetime('now') WHERE id=?`,
     end, saveImage(body.end_photo), str(body.notes, 'Notes'), t.id);
+  tracking.onEnd(t.id, body);
   return { ok: true, distance_km: end - t.start_km };
 });
 
@@ -775,6 +779,9 @@ function collectReminders() {
   }
   return items;
 }
+// --- GPS tracking during trips
+const tracking = require('./tracking')({ db, all, get, run, route, bad, HttpError });
+
 const notifications = require('./notifications')({ db, all, get, run, route, today, bad, str, collect: collectReminders });
 
 // --- one vehicle: everything about it

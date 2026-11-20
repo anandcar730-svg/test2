@@ -250,7 +250,8 @@ pages.dashboard = async (main) => {
         <small>${fmt(x.km)}</small><i style="height:${(x.km / max) * 100}%"></i><span>${x.date.slice(8)}</span></div>`).join('')}</div>`
         : '<p class="muted">No completed trips yet.</p>'}
     </div>
-    ${d.active_trips.length ? `<div class="card"><h2>On the road now</h2><div class="table-wrap"><table>
+    ${d.active_trips.length ? `<div class="card"><div class="row"><h2 style="margin:0">On the road now</h2><span class="spacer"></span>
+      ${isAdmin ? '<a class="btn small primary" href="#/live">📍 Live map</a>' : ''}</div><div class="table-wrap"><table>
       <tr><th>Vehicle</th><th>Driver</th><th>Started</th><th>Start km</th></tr>
       ${d.active_trips.map((t) => `<tr><td>${esc(t.reg_no)}</td><td>${esc(t.driver_name)}</td><td>${esc(t.started_at)} UTC</td><td>${fmt(t.start_km)}</td></tr>`).join('')}
       </table></div></div>` : ''}
@@ -294,22 +295,34 @@ pages.trips = async (main) => {
         <label><span>Date *</span><input type="date" name="date" value="${today()}" required></label>
         ${kmField('start_km', 'Starting kilometer (odometer)')}
         ${photoField('start_photo', 'Photo of odometer (start)')}
+        <p class="full muted" style="margin:0">📍 When you start, your location is shared with the admin <b>only while this trip is running</b> (until End trip).
+          Allow location when the phone asks, and keep the app open on screen while driving.</p>
       </div><div class="actions"><button class="primary" type="submit">Start trip</button></div></form></div>`}
     <div class="card"><h2>History</h2>${filtersBar('flt')}<div id="list"></div></div>`;
 
   for (const f of $$('form[data-end]', main)) {
     bindPhotoPickers(f);
     f.onsubmit = (e) => { e.preventDefault(); submitting(f, async () => {
-      const r = await api(`/api/trips/${f.dataset.end}/end`, { method: 'PUT', body: { ...formData(f), end_photo: f._photos.end_photo[0] } });
-      toast(`Trip ended – ${fmt(r.distance_km, 1)} km driven`); route();
+      await flushGps();
+      const pos = await getPosition(8000);
+      const r = await api(`/api/trips/${f.dataset.end}/end`, { method: 'PUT', body: { ...formData(f), end_photo: f._photos.end_photo[0],
+        ...(pos ? { end_lat: pos.coords.latitude, end_lng: pos.coords.longitude, end_accuracy: Math.round(pos.coords.accuracy) } : {}) } });
+      await flushGps();
+      if (String(tracker.tripId) === f.dataset.end) stopTracking(!tracker.queue.length);
+      toast(`Trip ended – ${fmt(r.distance_km, 1)} km driven. Location sharing stopped.`); route();
     }); };
   }
   const start = $('#start', main);
   if (start) {
     bindPhotoPickers(start); bindOdometer(start, 'start_km');
     start.onsubmit = (e) => { e.preventDefault(); submitting(start, async () => {
-      await api('/api/trips', { method: 'POST', body: { ...formData(start), start_photo: start._photos.start_photo[0] } });
-      toast('Trip started. Drive safe!'); route();
+      const pos = await getPosition();
+      const r = await api('/api/trips', { method: 'POST', body: { ...formData(start), start_photo: start._photos.start_photo[0],
+        ...(pos ? { start_lat: pos.coords.latitude, start_lng: pos.coords.longitude, start_accuracy: Math.round(pos.coords.accuracy) } : {}) } });
+      const reg = start.vehicle_id.selectedOptions[0]?.textContent.split(' – ')[0] || '';
+      startTracking(r.id, reg);
+      toast(pos ? 'Trip started – location sharing is on. Drive safe!' : 'Trip started. Location was not shared – allow location to track the route.', !pos);
+      route();
     }); };
   }
   const load = async (qs) => {
@@ -320,7 +333,8 @@ pages.trips = async (main) => {
       ${rows.map((r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.reg_no)}</td>${state.user.role === 'admin' ? `<td>${esc(r.driver_name)}</td>` : ''}
         <td>${fmt(r.start_km)}</td><td>${r.end_km === null ? '<span class="badge warn">open</span>' : fmt(r.end_km)}</td>
         <td><b>${r.distance_km === null ? '—' : fmt(r.distance_km, 1) + ' km'}</b></td>
-        <td>${thumb(r.start_photo)} ${thumb(r.end_photo)}</td><td class="wrap">${esc(r.notes)}</td><td>${delBtn('trips', r.id)}</td></tr>`).join('')}
+        <td>${thumb(r.start_photo)} ${thumb(r.end_photo)}</td><td class="wrap">${esc(r.notes)}</td>
+        <td style="white-space:nowrap">${r.gps_points ? `<a class="btn small" href="#/trip-map/${r.id}">🗺 Route</a> ` : ''}${delBtn('trips', r.id)}</td></tr>`).join('')}
       </table></div>`;
     bindDeletes($('#list', main), () => load(qs));
   };
@@ -1476,7 +1490,7 @@ pages.profile = async (main) => {
 const NAV = [
   ['dashboard', '📊', 'Dashboard'], ['trips', '🚗', 'Daily km'], ['fuel', '⛽', 'Fuel'],
   ['services', '🛢', 'Service'], ['accidents', '⚠️', 'Accidents'], ['complaints', '📣', 'Complaints'],
-  ['vehicles', '🚐', 'Vehicles'], ['drivers', '👤', 'Drivers', 'admin'], ['documents', '📄', 'Documents', 'admin'], ['loyverse', '🧾', 'Loyverse', 'admin'],
+  ['vehicles', '🚐', 'Vehicles'], ['drivers', '👤', 'Drivers', 'admin'], ['live', '📍', 'Live map', 'admin'], ['documents', '📄', 'Documents', 'admin'], ['loyverse', '🧾', 'Loyverse', 'admin'],
   ['profile', '⚙️', 'Profile'],
 ];
 
@@ -1611,6 +1625,193 @@ pages.notifications = async (main) => {
   if (d.unread) setTimeout(updateBell, 0);
 };
 
+// ================================================================== GPS tracking while on a trip
+const tracker = { tripId: null, reg: '', watchId: null, queue: [], last: null, lastFix: null, sent: 0, wake: null, timer: null, error: null };
+const gpsKey = (id) => `fleet_gps_${id}`;
+const distM = (a, b) => {
+  const r = (x) => (x * Math.PI) / 180;
+  const h = Math.sin(r(b.lat - a.lat) / 2) ** 2 + Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(r(b.lng - a.lng) / 2) ** 2;
+  return 2 * 6371008.8 * Math.asin(Math.min(1, Math.sqrt(h)));
+};
+const loadGpsQueue = (id) => { try { return JSON.parse(localStorage.getItem(gpsKey(id)) || '[]'); } catch { return []; } };
+const saveGpsQueue = () => { try { if (tracker.tripId) localStorage.setItem(gpsKey(tracker.tripId), JSON.stringify(tracker.queue.slice(-3000))); } catch { /* storage full/blocked */ } };
+/** One position now (resolves null if denied / no fix – never throws). */
+function getPosition(timeout = 12000) {
+  return new Promise((res) => {
+    if (!('geolocation' in navigator)) return res(null);
+    navigator.geolocation.getCurrentPosition((p) => res(p), () => res(null), { enableHighAccuracy: true, timeout, maximumAge: 20000 });
+  });
+}
+async function keepAwake() {
+  try { if ('wakeLock' in navigator && document.visibilityState === 'visible') tracker.wake = await navigator.wakeLock.request('screen'); } catch { /* not allowed */ }
+}
+function onGpsVisibility() { if (document.visibilityState === 'visible' && tracker.tripId) { keepAwake(); flushGps(); renderGpsBar(); } }
+function startTracking(tripId, reg) {
+  if (!('geolocation' in navigator)) { tracker.error = 'This phone/browser cannot share location.'; return; }
+  if (tracker.tripId === tripId && tracker.watchId !== null) return;
+  stopTracking(false);
+  Object.assign(tracker, { tripId, reg, queue: loadGpsQueue(tripId), last: null, lastFix: null, sent: 0, error: null });
+  tracker.watchId = navigator.geolocation.watchPosition(onGpsFix, onGpsError, { enableHighAccuracy: true, maximumAge: 10000, timeout: 60000 });
+  tracker.timer = setInterval(() => { flushGps(); renderGpsBar(); }, 30000);
+  keepAwake();
+  document.addEventListener('visibilitychange', onGpsVisibility);
+  renderGpsBar();
+}
+function onGpsFix(pos) {
+  const c = pos.coords;
+  const p = { lat: +c.latitude.toFixed(6), lng: +c.longitude.toFixed(6), accuracy: Math.round(c.accuracy), speed: c.speed ?? null,
+    heading: Number.isFinite(c.heading) ? Math.round(c.heading) : null, at: new Date(pos.timestamp || Date.now()).toISOString() };
+  tracker.lastFix = p; tracker.error = null;
+  const prev = tracker.last;
+  const secs = prev ? (Date.parse(p.at) - Date.parse(prev.at)) / 1000 : Infinity;
+  // keep a point every 30 s, or sooner after moving 50 m
+  if (!prev || secs >= 30 || (secs >= 5 && distM(prev, p) >= 50)) { tracker.queue.push(p); tracker.last = p; saveGpsQueue(); }
+  if (tracker.queue.length >= 10) flushGps();
+  renderGpsBar();
+}
+function onGpsError(e) {
+  tracker.error = e.code === 1 ? 'Location is blocked – allow location for this site (🔒 next to the address), then reload.' : 'Waiting for GPS signal…';
+  renderGpsBar();
+}
+let gpsFlushing = false;
+async function flushGps() {
+  if (gpsFlushing || !tracker.tripId || !tracker.queue.length || navigator.onLine === false) return;
+  gpsFlushing = true;
+  const tripId = tracker.tripId, batch = tracker.queue.slice(0, 300);
+  try {
+    const r = await api(`/api/trips/${tripId}/locations`, { method: 'POST', body: { points: batch } });
+    if (tracker.tripId === tripId) { tracker.queue.splice(0, batch.length); tracker.sent += r.saved; saveGpsQueue(); }
+    if (r.closed && tracker.tripId === tripId && !tracker.queue.length) stopTracking(true);
+  } catch { /* offline – kept on the phone, sent later */ } finally { gpsFlushing = false; }
+}
+function stopTracking(clear = true) {
+  if (tracker.watchId !== null) navigator.geolocation.clearWatch(tracker.watchId);
+  clearInterval(tracker.timer);
+  tracker.watchId = null;
+  try { tracker.wake?.release(); } catch { /* ignore */ }
+  tracker.wake = null;
+  document.removeEventListener('visibilitychange', onGpsVisibility);
+  if (clear && tracker.tripId) { try { localStorage.removeItem(gpsKey(tracker.tripId)); } catch { /* ignore */ } }
+  tracker.tripId = null;
+  renderGpsBar();
+}
+window.addEventListener('online', () => flushGps());
+function renderGpsBar() {
+  let bar = $('#gpsbar');
+  if (!tracker.tripId) { bar?.remove(); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'gpsbar';
+    bar.setAttribute('role', 'status');
+    $('.topbar')?.after(bar);
+    if (!bar.isConnected) return;
+  }
+  const f = tracker.lastFix;
+  const ago = f ? Math.max(0, Math.round((Date.now() - Date.parse(f.at)) / 1000)) : null;
+  bar.className = tracker.error ? 'warn' : '';
+  bar.innerHTML = tracker.error
+    ? `⚠️ <b>${esc(tracker.reg)}</b> trip: ${esc(tracker.error)}`
+    : `<span class="pulse"></span> <b>Location sharing on</b> · ${esc(tracker.reg)} · ${f ? `GPS ${ago < 60 ? `${ago}s` : `${Math.round(ago / 60)} min`} ago ±${f.accuracy} m` : 'finding GPS…'}
+       · ${tracker.sent} sent${tracker.queue.length ? `, ${tracker.queue.length} waiting` : ''}
+       <small>Keep this app open on screen while driving · stops at End trip</small>`;
+}
+/** After login / reload: resume sharing for the user's open trip. */
+async function resumeTracking() {
+  try {
+    const open = await api('/api/trips/open');
+    if (open.length) startTracking(open[0].id, open[0].reg_no); else if (tracker.tripId) stopTracking(true);
+  } catch { /* ignore */ }
+}
+
+// ---- maps (Leaflet, bundled in /vendor/leaflet; map pictures from OpenStreetMap)
+let leafletLoading = null;
+function loadLeaflet() {
+  if (window.L) return Promise.resolve(window.L);
+  return (leafletLoading ||= new Promise((res, rej) => {
+    const css = document.createElement('link');
+    css.rel = 'stylesheet'; css.href = '/vendor/leaflet/leaflet.css';
+    document.head.appendChild(css);
+    const s = document.createElement('script');
+    s.src = '/vendor/leaflet/leaflet.js';
+    s.onload = () => res(window.L);
+    s.onerror = () => { leafletLoading = null; rej(new Error('The map could not be loaded')); };
+    document.head.appendChild(s);
+  }));
+}
+function newMap(el) {
+  const map = L.map(el, { zoomControl: true });
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' }).addTo(map);
+  return map;
+}
+const pin = (html, cls = '') => L.divIcon({ className: `mpin ${cls}`, html: `<div>${html}</div>`, iconSize: null, iconAnchor: [14, 34], popupAnchor: [0, -30] });
+const gmaps = (lat, lng) => `https://www.google.com/maps?q=${lat},${lng}`;
+const kmh = (ms) => (ms === null || ms === undefined ? '—' : `${Math.round(ms * 3.6)} km/h`);
+const ageText = (min) => (min === null ? '—' : min < 1 ? 'just now' : min < 60 ? `${min} min ago` : `${Math.floor(min / 60)} h ${min % 60} min ago`);
+
+// --- live map (admin: all vehicles on a trip; drivers: their own)
+pages.live = async (main) => {
+  const rows = await api('/api/live');
+  main.innerHTML = `<div class="row"><h1 style="margin:0">📍 Live map</h1><span class="spacer"></span><small class="muted" id="liveat"></small></div>
+    <p class="muted">Vehicles on a trip right now. Updates every 30 seconds. Locations are only shared between <b>Start trip</b> and <b>End trip</b>.</p>
+    <div id="livemap" class="map"></div>
+    <div class="card"><h2>On the road (${rows.length})</h2>${rows.length ? `<div class="table-wrap"><table>
+      <tr><th>Vehicle</th><th>Driver</th><th>Last position</th><th>Speed</th><th>Since</th><th></th></tr>
+      ${rows.map((r) => `<tr><td><b>${vlink(r.vehicle_id, r.reg_no)}</b><br><small class="muted">${esc(r.model || '')}</small></td>
+        <td>${esc(r.driver_name)}${r.driver_phone ? `<br><a href="tel:${esc(r.driver_phone)}">📞 ${esc(r.driver_phone)}</a>` : ''}</td>
+        <td>${r.last ? `${ageText(r.age_min)}${r.age_min > 10 ? ' <span class="badge warn">no signal</span>' : ''}<br><small class="muted">±${Math.round(r.last.accuracy || 0)} m</small>`
+          : '<span class="badge">no GPS shared</span>'}</td>
+        <td>${r.last ? kmh(r.last.speed) : '—'}</td><td>${esc(r.started_at ? dateTime(r.started_at) : r.date)}<br><small class="muted">${fmt(r.start_km)} km</small></td>
+        <td style="white-space:nowrap"><a class="btn small" href="#/trip-map/${r.trip_id}">🗺 Route</a>${r.last ? ` <a class="btn small" href="${gmaps(r.last.lat, r.last.lng)}" target="_blank" rel="noopener">Google Maps</a>` : ''}</td></tr>`).join('')}
+      </table></div>` : '<p class="muted">No vehicle is on a trip right now.</p>'}</div>`;
+  $('#liveat', main).textContent = `Updated ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`;
+  try {
+    await loadLeaflet();
+    const map = newMap($('#livemap', main));
+    const pts = rows.filter((r) => r.last);
+    for (const r of pts) {
+      L.marker([r.last.lat, r.last.lng], { icon: pin(`${r.fuel_type === 'EV' ? '⚡' : '🚐'} ${esc(r.reg_no)}`, r.age_min > 10 ? 'stale' : '') }).addTo(map)
+        .bindPopup(`<b>${esc(r.reg_no)}</b><br>👤 ${esc(r.driver_name)}<br>${ageText(r.age_min)} · ${kmh(r.last.speed)}<br><a href="#/trip-map/${r.trip_id}">Route</a>`);
+    }
+    if (pts.length) map.fitBounds(L.latLngBounds(pts.map((r) => [r.last.lat, r.last.lng])).pad(0.3), { maxZoom: 15 });
+    else map.setView([13.0827, 80.2707], 11); // Chennai
+  } catch (e) { $('#livemap', main).innerHTML = `<p class="muted" style="padding:16px">${esc(e.message)}</p>`; }
+  const here = location.hash;
+  setTimeout(() => { if (location.hash === here && document.visibilityState === 'visible') route(); }, 30000);
+};
+
+// --- route of one trip
+pages['trip-map'] = async (main, id) => {
+  const d = await api(`/api/trips/${encodeURIComponent(id)}/route`);
+  const t = d.trip, s = d.summary;
+  main.innerHTML = `<div class="row"><a class="btn small" href="#/${state.user.role === 'admin' ? 'live' : 'trips'}">← Back</a></div>
+    <h1 style="margin:12px 0 4px">🗺 ${esc(t.reg_no)} – trip on ${niceDate(t.date)}</h1>
+    <p class="muted" style="margin-top:0">👤 ${esc(t.driver_name)} · ${t.open ? '<span class="badge warn">on the road now</span>' : `${fmt(t.start_km)} → ${fmt(t.end_km)} km`}</p>
+    <div class="grid">
+      <div class="stat"><div class="v">${fmt(s.gps_km, 1)} km</div><div class="l">GPS distance</div></div>
+      <div class="stat"><div class="v">${t.odometer_km === null ? '—' : `${fmt(t.odometer_km, 1)} km`}</div><div class="l">Odometer distance</div></div>
+      <div class="stat"><div class="v">${s.minutes >= 60 ? `${Math.floor(s.minutes / 60)} h ${s.minutes % 60} m` : `${s.minutes} min`}</div><div class="l">Tracked time</div></div>
+      <div class="stat"><div class="v">${s.avg_kmh} / ${s.max_kmh}</div><div class="l">Average / top speed (km/h)</div></div>
+      <div class="stat"><div class="v">${s.points}</div><div class="l">GPS points</div></div>
+    </div>
+    ${t.odometer_km !== null && s.gps_km > 1 && Math.abs(t.odometer_km - s.gps_km) / Math.max(t.odometer_km, s.gps_km) > 0.25
+      ? `<div class="alert warn">GPS distance and odometer distance differ by more than 25%. GPS may have been off for part of the trip (app closed / screen off), or the odometer reading needs checking.</div>` : ''}
+    ${s.points ? '<div id="tripmap" class="map"></div>' : '<div class="alert">No location was shared for this trip (location blocked, or the app was not open).</div>'}`;
+  if (!s.points) return;
+  try {
+    await loadLeaflet();
+    const map = newMap($('#tripmap', main));
+    const good = d.points.filter((p) => p.accuracy === null || p.accuracy <= 100);
+    const line = (good.length > 1 ? good : d.points).map((p) => [p.lat, p.lng]);
+    const poly = L.polyline(line, { color: '#0f766e', weight: 5, opacity: 0.85 }).addTo(map);
+    const first = d.points[0], last = d.points[d.points.length - 1];
+    L.marker([first.lat, first.lng], { icon: pin('🟢 Start') }).addTo(map).bindPopup(`Start · ${dateTime(first.recorded_at)}`);
+    L.marker([last.lat, last.lng], { icon: pin(t.open ? `🚐 ${esc(t.reg_no)}` : '🏁 End') }).addTo(map)
+      .bindPopup(`${t.open ? 'Last position' : 'End'} · ${dateTime(last.recorded_at)}<br><a href="${gmaps(last.lat, last.lng)}" target="_blank" rel="noopener">Open in Google Maps</a>`);
+    map.fitBounds(poly.getBounds().pad(0.2), { maxZoom: 16 });
+  } catch (e) { $('#tripmap', main).innerHTML = `<p class="muted" style="padding:16px">${esc(e.message)}</p>`; }
+  if (t.open) { const here = location.hash; setTimeout(() => { if (location.hash === here && document.visibilityState === 'visible') route(); }, 30000); }
+};
+
 function renderShell() {
   const items = NAV.filter((n) => !n[3] || n[3] === state.user.role);
   $('#app').innerHTML = `<header class="topbar"><span class="title">🚐 Fleet Monitor</span>
@@ -1618,14 +1819,19 @@ function renderShell() {
       <span class="muted uname" style="color:#ccfbf1">${esc(state.user.name)}</span><button id="lo">Log out</button></header>
     <div class="shell"><nav class="side">${items.map(([k, i, l]) => `<a href="#/${k}" data-nav="${k}"><span class="ico">${i}</span>${l}</a>`).join('')}</nav>
     <main id="main"></main></div>`;
-  $('#lo').onclick = async () => { await api('/api/logout', { method: 'POST' }).catch(() => {}); state.user = null; render(); };
+  $('#lo').onclick = async () => {
+    if (tracker.tripId && !confirm('You are on a trip – logging out stops location sharing. Log out anyway?')) return;
+    await flushGps(); stopTracking(false);
+    await api('/api/logout', { method: 'POST' }).catch(() => {}); state.user = null; render();
+  };
+  renderGpsBar();
 }
 
 async function route() {
   if (!state.user) return;
   let [page, param] = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/');
   const nav = NAV.find((n) => n[0] === page);
-  const hidden = (param && (page === 'vehicle' || page === 'vehicle-edit')) || page === 'notifications'; // pages without a menu entry
+  const hidden = (param && (page === 'vehicle' || page === 'vehicle-edit' || page === 'trip-map')) || page === 'notifications'; // pages without a menu entry
   if (!hidden && (!nav || (nav[3] && nav[3] !== state.user.role))) page = 'dashboard';
   const activeNav = page === 'vehicle' || page === 'vehicle-edit' ? 'vehicles' : page;
   $$('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === activeNav));
@@ -1648,6 +1854,7 @@ async function render() {
   renderShell();
   route();
   if (pushSupported() && Notification.permission === 'granted') enablePush({ quiet: true }).catch(() => {});
+  resumeTracking();
 }
 window.addEventListener('hashchange', route);
 render();

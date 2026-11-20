@@ -93,6 +93,23 @@ These are on each **vehicle page**:
   - The admin sets the status: *Open → In progress → Resolved / Rejected*, with notes.
   - Drivers see their own complaints and the ones about them.
 
+## Location tracking during trips
+**When it runs:** only between **Start trip** and **End trip**. There is no tracking outside a trip.
+- **Start trip:** the phone asks for location permission, and the start position is saved. While driving, a point is saved about every 30 s, or sooner after moving 50 m.
+- **Points are sent in batches.** If there is no signal they wait on the phone and are sent later.
+- **The driver always sees** a green **"Location sharing on"** bar with the GPS age, accuracy and points sent.
+- **End trip:** the end position is saved and sharing stops.
+
+**Maps:**
+- **📍 Live map** (admin): vehicles on a trip right now, with driver (tap to call), last update, speed and *no signal* warnings. It refreshes every 30 s and has a Google Maps link.
+- **🗺 Route** for each trip (in the Daily km history): the path, start and end, GPS vs odometer distance, time, and average and top speed. Drivers see their own trips; the admin sees all.
+
+**Data quality:** inaccurate fixes (> 100 m) and GPS jumps are ignored in distances. Location points are deleted after **180 days** (`LOCATION_KEEP_DAYS`).
+
+**Limits of a website:** browsers only share location **while the app is open on screen**. The app keeps the screen awake during a trip, so use a phone holder. Tracking with the screen off or another app in front would need a native Android app.
+
+**Maps library:** Leaflet 1.9.4 (BSD licence) is bundled in `public/vendor/leaflet`. Map pictures come from OpenStreetMap.
+
 ## Notifications for expiry and warranty dates
 Reminders cover **insurance, PUC, fitness, road tax, permit, battery / tyre / part warranties** and **oil change due**:
 - **When:** 30, 15, 7, 3 and 1 days before, on the day, then **weekly while expired**. The admin can change these days and the time (08:00 by default).
