@@ -813,6 +813,14 @@ function collectReminders() {
   }
   return items;
 }
+// --- monthly fuel report (page + PDF)
+db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)`);
+const reports = require('./reports')({ all, get, route, bad, HttpError, FUELS, primaryFuel, odometerKm,
+  getSetting: (k) => get(`SELECT value FROM settings WHERE key=?`, k)?.value ?? null,
+  setSetting: (k, v) => (v === null ? run(`DELETE FROM settings WHERE key=?`, k)
+    : run(`INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, k, String(v))) });
+void reports;
+
 // --- GPS tracking during trips
 const tracking = require('./tracking')({ db, all, get, run, route, bad, HttpError });
 
@@ -1025,6 +1033,12 @@ const server = http.createServer(async (req, res) => {
         if (res.csv) {
           return send(res, 200, '﻿' + res.csv.body, { 'Content-Type': 'text/csv; charset=utf-8',
             'Content-Disposition': `attachment; filename="${res.csv.name}"` });
+        }
+        if (result && result.__file) { // binary download (e.g. PDF report)
+          const f = result.__file;
+          res.writeHead(200, { 'Content-Type': f.type, 'Content-Length': f.body.length, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store',
+            'Content-Disposition': `attachment; filename="${String(f.name).replace(/[^\w.-]/g, '_')}"` });
+          return res.end(f.body);
         }
         return send(res, 200, result ?? { ok: true });
       }

@@ -93,6 +93,20 @@ These are on each **vehicle page**:
   - The admin sets the status: *Open → In progress → Resolved / Rejected*, with notes.
   - Drivers see their own complaints and the ones about them.
 
+## Monthly fuel report (PDF)
+Open **📊 Reports**, choose a **month** and a **vehicle**, or **All vehicles** (admin), then click **⬇ Download PDF**. The report shows:
+- fuel or energy used per type, total amount, km driven, **mileage** (fill-to-fill, otherwise km ÷ fuel), **cost per km** and average price
+- the change vs last month
+- a daily spending chart, every fill (date, odometer, quantity, rate, amount, station, who, POS-imported), and a per-driver breakdown
+
+**PDF details:**
+- A4 with page numbers and your organisation name (set it in *Report settings*).
+- *All vehicles* adds a fleet summary page, then one section per vehicle.
+- The built-in PDF fonts have no ₹ sign, so amounts show as "Rs.".
+- The PDF is generated on the server by a small built-in writer (`pdf.js`), with no extra software.
+
+**Who sees what:** drivers see reports for their assigned vehicle; the admin sees all vehicles.
+
 ## Location tracking during trips
 **When it runs:** only between **Start trip** and **End trip**. There is no tracking outside a trip.
 - **Start trip:** the phone asks for location permission, and the start position is saved. While driving, a point is saved about every 30 s, or sooner after moving 50 m.

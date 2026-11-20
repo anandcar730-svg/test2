@@ -624,7 +624,8 @@ pages.vehicle = async (main, id) => {
       </table></div><p style="margin-bottom:0"><a class="btn small" href="#/services">+ Add service record</a></p></div>`)}
 
     ${panel('usage', `
-      <div class="card"><h2>⛽ Fuel &amp; charging <small class="muted">(last 30)</small></h2><div class="table-wrap" id="vfuel"><table>
+      <div class="card"><div class="row"><h2 style="margin:0">⛽ Fuel &amp; charging <small class="muted">(last 30)</small></h2><span class="spacer"></span>
+        <a class="btn small" href="#/reports/${v.id}">📊 Monthly report / PDF</a></div><div class="table-wrap" id="vfuel" style="margin-top:8px"><table>
         <tr><th>Date</th><th>Fuel</th><th>Odometer</th><th>Qty</th><th>Amount</th><th>Station</th><th>By</th><th>Bill</th></tr>
         ${d.fuel.map((r) => `<tr><td>${esc(r.date)}</td><td>${fuelBadge(r.fuel_type)} ${sourceBadge(r)}</td><td>${odoCell(r)}</td>
           <td>${r.quantity > 0 ? `${fmt(r.quantity, 2)} ${esc(r.unit)}` : '<small class="muted">📍 reading</small>'}</td><td><b>${r.amount ? money(r.amount) : '—'}</b></td><td>${esc(r.station)}</td><td>${esc(r.driver_name)}</td><td>${thumb(r.photo)}</td></tr>`).join('')
@@ -1548,7 +1549,7 @@ function renderBgTracking(box, t) {
 const NAV = [
   ['dashboard', '📊', 'Dashboard'], ['trips', '🚗', 'Daily km'], ['fuel', '⛽', 'Fuel'],
   ['services', '🛢', 'Service'], ['accidents', '⚠️', 'Accidents'], ['complaints', '📣', 'Complaints'],
-  ['vehicles', '🚐', 'Vehicles'], ['drivers', '👤', 'Drivers', 'admin'], ['live', '📍', 'Live map', 'admin'], ['documents', '📄', 'Documents', 'admin'], ['loyverse', '🧾', 'Loyverse', 'admin'],
+  ['vehicles', '🚐', 'Vehicles'], ['drivers', '👤', 'Drivers', 'admin'], ['reports', '📊', 'Reports'], ['live', '📍', 'Live map', 'admin'], ['documents', '📄', 'Documents', 'admin'], ['loyverse', '🧾', 'Loyverse', 'admin'],
   ['profile', '⚙️', 'Profile'],
 ];
 
@@ -1873,6 +1874,105 @@ pages['trip-map'] = async (main, id) => {
   } catch (e) { $('#tripmap', main).innerHTML = `<p class="muted" style="padding:16px">${esc(e.message)}</p>`; }
   if (t.open) { const here = location.hash; setTimeout(() => { if (location.hash === here && document.visibilityState === 'visible') route(); }, 30000); }
 };
+
+// ================================================================== monthly fuel report (page + PDF download)
+const thisMonth = () => today().slice(0, 7);
+const pctBadge = (p, goodWhenUp) => (p === null || p === undefined ? '' : `<span class="badge ${p === 0 ? '' : (p > 0) === goodWhenUp ? 'ok' : 'danger'}">${p > 0 ? '▲' : p < 0 ? '▼' : ''} ${Math.abs(p)}% vs last month</span>`);
+pages.reports = async (main, param) => {
+  const admin = state.user.role === 'admin';
+  await refreshVehicles();
+  const mine = admin ? state.vehicles : state.vehicles.filter((v) => v.assigned_driver_id === state.user.id);
+  if (!admin && !mine.length) { main.innerHTML = '<h1>📊 Fuel report</h1><p class="muted">Reports are available for the vehicle assigned to you. Ask the admin to assign one.</p>'; return; }
+  const st = state.reportSel ||= { vehicle: admin ? 'all' : String(mine[0].id), month: thisMonth() };
+  if (param) st.vehicle = String(param);
+  if (!admin && !mine.some((v) => String(v.id) === st.vehicle)) st.vehicle = String(mine[0].id);
+  const settings = admin ? await api('/api/reports/settings') : null;
+  main.innerHTML = `<h1>📊 Monthly fuel report</h1>
+    <form class="filters" id="rf" style="align-items:end">
+      <label><span>Month</span><input type="month" name="month" value="${esc(st.month)}" max="${thisMonth()}" required></label>
+      <label><span>Vehicle</span><select name="vehicle">${admin ? `<option value="all" ${st.vehicle === 'all' ? 'selected' : ''}>All vehicles (summary + each)</option>` : ''}
+        ${mine.map((v) => `<option value="${v.id}" ${String(v.id) === st.vehicle ? 'selected' : ''}>${esc(v.reg_no)}${v.model ? ' – ' + esc(v.model) : ''}${v.active ? '' : ' (inactive)'}</option>`).join('')}</select></label>
+      <div class="row"><a class="btn primary" id="pdf" download>⬇ Download PDF</a></div>
+    </form>
+    <div id="rep"><p class="muted">Loading…</p></div>
+    ${admin ? `<details class="card"><summary><b>⚙️ Report settings</b></summary><form id="rs" class="row" style="margin-top:10px">
+      <label style="flex:1"><span>Organisation name (top of the PDF)</span><input name="org_name" value="${esc(settings.org_name)}" maxlength="80"></label>
+      <button type="submit">Save</button></form></details>` : ''}`;
+  const f = $('#rf', main);
+  const load = async () => {
+    st.month = f.month.value || thisMonth(); st.vehicle = f.vehicle.value;
+    const qs = `vehicle=${encodeURIComponent(st.vehicle)}&month=${encodeURIComponent(st.month)}`;
+    $('#pdf', main).href = `/api/reports/fuel.pdf?${qs}`;
+    const box = $('#rep', main);
+    box.innerHTML = '<p class="muted">Loading…</p>';
+    try {
+      const r = await api(`/api/reports/fuel?${qs}`);
+      box.innerHTML = r.fleet ? fleetReportHtml(r.fleet) : vehicleReportHtml(r);
+    } catch (e) { box.innerHTML = `<div class="alert danger">${esc(e.message)}</div>`; }
+  };
+  f.onchange = load;
+  f.onsubmit = (e) => e.preventDefault();
+  const rs = $('#rs', main);
+  if (rs) rs.onsubmit = (e) => { e.preventDefault(); submitting(rs, async () => { await api('/api/reports/settings', { method: 'PUT', body: { org_name: rs.org_name.value } }); toast('Saved'); }); };
+  await load();
+};
+function vehicleReportHtml(r) {
+  const max = Math.max(1, ...r.daily.map((d) => d.amount));
+  const qty = r.by_type.map((t) => `${fmt(t.quantity, 2)} ${esc(t.unit)}`).join(' + ') || '0';
+  return `<div class="card"><h2 style="margin-bottom:4px">${vlink(r.vehicle.id, r.vehicle.reg_no)} – ${esc(r.month_label)}</h2>
+      <p class="muted" style="margin-top:0">${[r.vehicle.model, r.vehicle.fuel_type, r.vehicle.driver_name && `Driver: ${r.vehicle.driver_name}`].filter(Boolean).map(esc).join(' · ')}</p>
+      <div class="grid" style="margin:0">
+        <div class="stat"><div class="v">${qty}</div><div class="l">Fuel / energy used</div></div>
+        <div class="stat"><div class="v">${money(r.amount)}</div><div class="l">Total amount ${pctBadge(r.change.amount_pct, false)}</div></div>
+        <div class="stat"><div class="v">${fmt(r.km, 1)} km</div><div class="l">Distance driven ${pctBadge(r.change.km_pct, true)}</div></div>
+        <div class="stat"><div class="v">${r.mileage ? fmt(r.mileage, 2) : '—'}</div><div class="l">Mileage (km/${esc(r.unit)}) ${pctBadge(r.change.mileage_pct, true)}
+          ${r.mileage_method ? `<br><small>${esc(r.mileage_method)}</small>` : ''}</div></div>
+        <div class="stat"><div class="v">${r.cost_per_km !== null ? money(r.cost_per_km) : '—'}</div><div class="l">Cost per km${r.previous.cost_per_km ? `<br><small>last month ${money(r.previous.cost_per_km)}</small>` : ''}</div></div>
+        <div class="stat"><div class="v">${r.avg_price !== null ? money(r.avg_price) : '—'}</div><div class="l">Average price per ${esc(r.unit)}</div></div>
+        <div class="stat"><div class="v">${r.fill_count}</div><div class="l">Fills / charges</div></div>
+        <div class="stat"><div class="v">${money(r.previous.amount)}</div><div class="l">Last month (${esc(r.previous.month_label)})</div></div>
+      </div></div>
+    <div class="card"><h2>Amount spent per day</h2>
+      ${r.amount ? `<div class="bars">${r.daily.map((d) => `<div class="b" title="${d.day}: ${money(d.amount)}">
+        <small>${d.amount ? fmt(d.amount) : ''}</small><i style="height:${(d.amount / max) * 100}%"></i><span>${d.day % 5 === 0 || d.day === 1 ? d.day : ''}</span></div>`).join('')}</div>`
+        : '<p class="muted">No fuel recorded this month.</p>'}</div>
+    <div class="card"><h2>All fills (${r.rows.length})</h2>${r.rows.length ? `<div class="table-wrap"><table>
+      <tr><th>Date</th><th>Fuel</th><th>Odometer</th><th>Quantity</th><th>Rate</th><th>Amount</th><th>Station</th><th>By</th></tr>
+      ${r.rows.map((f) => `<tr><td>${niceDate(f.date)}</td><td>${fuelBadge(f.fuel_type)}</td><td>${f.odometer === null ? '—' : fmt(f.odometer)}</td>
+        <td>${fmt(f.quantity, 2)} ${esc(f.unit)}</td><td>${f.price ? '₹' + fmt(f.price, 2) : '—'}</td><td><b>${money(f.amount)}</b></td>
+        <td>${esc(f.station || '')}${f.source === 'loyverse' ? ' <span class="badge src-pos">🧾 POS</span>' : ''}</td><td>${esc(f.driver)}</td></tr>`).join('')}
+      <tr style="background:color-mix(in srgb,var(--ok) 10%,transparent)"><td><b>Total</b></td><td></td><td></td><td><b>${qty}</b></td><td></td><td><b>${money(r.amount)}</b></td><td></td><td>${r.fill_count} fill(s)</td></tr>
+    </table></div>` : '<p class="muted">No fuel or charging recorded this month.</p>'}</div>
+    ${r.drivers.length ? `<div class="card"><h2>By driver</h2><div class="table-wrap"><table><tr><th>Driver</th><th>Fills</th><th>Quantity</th><th>Amount</th></tr>
+      ${r.drivers.map((d) => `<tr><td>${esc(d.driver)}</td><td>${d.fills}</td><td>${Object.entries(d.quantity).map(([t, q]) => `${fmt(q, 2)} ${FUEL[t]?.unit || ''}`).join(' + ')}</td>
+        <td><b>${money(d.amount)}</b></td></tr>`).join('')}</table></div></div>` : ''}`;
+}
+function fleetReportHtml(f) {
+  return `<div class="card"><h2>All vehicles – ${esc(f.month_label)}</h2>
+      <div class="grid" style="margin:0">
+        <div class="stat"><div class="v">${money(f.total.amount)}</div><div class="l">Total fuel amount</div></div>
+        <div class="stat"><div class="v">${fmt(f.total.km, 1)} km</div><div class="l">Distance driven</div></div>
+        <div class="stat"><div class="v">${f.total.cost_per_km !== null ? money(f.total.cost_per_km) : '—'}</div><div class="l">Fuel cost per km</div></div>
+        <div class="stat"><div class="v">${f.total.fills}</div><div class="l">Fills / charges</div></div>
+      </div></div>
+    <div class="card"><h2>Per vehicle</h2><div class="table-wrap"><table>
+      <tr><th>Vehicle</th><th>Fuel used</th><th>Amount</th><th>km</th><th>Mileage</th><th>Cost / km</th><th>Fills</th><th></th></tr>
+      ${f.vehicles.map((v) => `<tr><td><b>${vlink(v.vehicle_id, v.reg_no)}</b><br><small class="muted">${esc(v.model || '')}</small></td>
+        <td>${v.by_type.map((t) => `${fmt(t.quantity, 1)} ${esc(t.unit)}`).join(' + ') || '—'}</td><td><b>${money(v.amount)}</b></td><td>${fmt(v.km, 0)}</td>
+        <td>${v.mileage ? `${fmt(v.mileage, 1)} km/${esc(v.unit)}` : '—'}</td><td>${v.cost_per_km !== null ? money(v.cost_per_km) : '—'}</td><td>${v.fill_count}</td>
+        <td style="white-space:nowrap"><button class="small" data-onev="${v.vehicle_id}">View</button>
+          <a class="btn small" href="/api/reports/fuel.pdf?vehicle=${v.vehicle_id}&month=${esc(f.month)}" download>⬇ PDF</a></td></tr>`).join('')
+        || '<tr><td colspan="8" class="muted">No vehicles.</td></tr>'}
+      <tr style="background:color-mix(in srgb,var(--ok) 10%,transparent)"><td><b>Total</b></td><td></td><td><b>${money(f.total.amount)}</b></td><td><b>${fmt(f.total.km, 0)}</b></td><td></td>
+        <td><b>${f.total.cost_per_km !== null ? money(f.total.cost_per_km) : '—'}</b></td><td><b>${f.total.fills}</b></td><td></td></tr>
+    </table></div></div>`;
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-onev]');
+  if (!b) return;
+  const sel = $('#rf [name=vehicle]');
+  if (sel) { sel.value = b.dataset.onev; sel.dispatchEvent(new Event('change', { bubbles: true })); window.scrollTo(0, 0); }
+});
 
 function renderShell() {
   const items = NAV.filter((n) => !n[3] || n[3] === state.user.role);
