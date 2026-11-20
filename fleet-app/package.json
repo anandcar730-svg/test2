@@ -1,0 +1,12 @@
+{
+  "name": "fleet-driver-monitor",
+  "version": "1.0.0",
+  "description": "Driver login & vehicle monitoring: daily kilometers, CNG fueling, oil change/service, and accident reports with photos.",
+  "main": "server.js",
+  "private": true,
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning server.js",
+    "test": "node --no-warnings=ExperimentalWarning test/smoke.test.js && node --no-warnings=ExperimentalWarning test/loyverse.test.js && node --no-warnings=ExperimentalWarning test/documents.test.js && node --no-warnings=ExperimentalWarning test/manual-details.test.js && node --no-warnings=ExperimentalWarning test/maintenance.test.js && node --no-warnings=ExperimentalWarning test/vehicles-section.test.js && node --no-warnings=ExperimentalWarning test/notifications.test.js && node --no-warnings=ExperimentalWarning test/tracking.test.js && node --no-warnings=ExperimentalWarning test/km-warnings.test.js && node --no-warnings=ExperimentalWarning test/reports.test.js"
+  }
+}
