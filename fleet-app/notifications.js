@@ -206,7 +206,7 @@ module.exports = function createNotifications({ db, all, get, run, route, today,
   route('GET', '/api/notifications/settings', { auth: 'admin' }, () => {
     let last = null;
     try { last = JSON.parse(getSetting('notif_last_run') || 'null'); } catch { /* ignore */ }
-    return { days: getSetting('notif_days') || DEFAULT_DAYS, hour: Number(getSetting('notif_hour') ?? 8), last_run: last,
+    return { days: getSetting('notif_days') || DEFAULT_DAYS, km: getSetting('notif_km') || '500,100', hour: Number(getSetting('notif_hour') ?? 8), last_run: last,
       devices: get(`SELECT COUNT(*) AS n FROM push_subs`).n, users_with_devices: get(`SELECT COUNT(DISTINCT user_id) AS n FROM push_subs`).n };
   });
   route('PUT', '/api/notifications/settings', { auth: 'admin' }, ({ body }) => {
@@ -214,6 +214,11 @@ module.exports = function createNotifications({ db, all, get, run, route, today,
       const list = [...new Set(String(body.days).split(/[\s,]+/).filter(Boolean).map(Number))];
       if (!list.length || list.some((n) => !Number.isInteger(n) || n < 0 || n > 365)) bad('Reminder days: whole numbers 0–365, e.g. 30, 15, 7, 3, 1, 0');
       setSetting('notif_days', list.sort((a, b) => b - a).join(','));
+    }
+    if (body.km !== undefined) {
+      const list = [...new Set(String(body.km).split(/[\s,]+/).filter(Boolean).map(Number))];
+      if (!list.length || list.some((n) => !Number.isInteger(n) || n < 10 || n > 5000)) bad('Warning distances: whole numbers 10–5000 km, e.g. 500, 100');
+      setSetting('notif_km', list.sort((a, b) => b - a).join(','));
     }
     if (body.hour !== undefined) {
       const h = Number(body.hour);

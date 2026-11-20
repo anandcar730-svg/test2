@@ -21,7 +21,14 @@ const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const SESSION_DAYS = 30;
 const MAX_BODY = 40 * 1024 * 1024; // 40 MB (several compressed photos)
-const OIL_ALERT_KM = 500; // warn when an oil change is due within this many km
+/** Distances (km) before an oil change / part replacement when a warning is given, e.g. [500, 100]. Admin can change them. */
+function kmWarnStages() {
+  let v = null;
+  try { v = db.prepare(`SELECT value FROM settings WHERE key='notif_km'`).get()?.value; } catch { /* settings table not created yet */ }
+  const list = String(v || '500,100').split(',').map(Number).filter((n) => Number.isFinite(n) && n > 0);
+  return list.length ? list.sort((a, b) => b - a) : [500, 100];
+}
+const kmWarn = () => kmWarnStages()[0]; // first warning distance = "due soon"
 
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -362,7 +369,7 @@ function oilStatus(vehicle) {
     last_oil_change_date: last?.date ?? null,
     oil_due_km: dueAt,
     oil_remaining_km: remaining,
-    oil_status: remaining <= 0 ? 'overdue' : remaining <= OIL_ALERT_KM ? 'due_soon' : 'ok',
+    oil_status: remaining <= 0 ? 'overdue' : remaining <= kmWarn() ? 'due_soon' : 'ok',
   };
 }
 
@@ -669,7 +676,8 @@ function logChange(vehicleId, userId, text) {
 }
 
 // --- upkeep: parts & warranties, wheels, daily oil/coolant check, complaints
-const maintenance = require('./maintenance')({ db, all, get, run, route, saveImage, getVehicle, num, str, isoDate, bad, HttpError, today, logChange });
+const maintenance = require('./maintenance')({ db, all, get, run, route, saveImage, getVehicle, num, str, isoDate, bad, HttpError, today, logChange,
+  vehicleOdometer, kmWarn });
 
 // --- vehicle documents: insurance / pollution / fitness / tax / permit (admin)
 const documents = require('./documents')({ db, all, get, run, today });
@@ -729,8 +737,9 @@ route('GET', '/api/fleet', ({ user }) => {
   return rows.map((v) => {
     const doc = documents.forVehicle(v.id);
     const papers = Object.entries(doc.docs).filter(([, s]) => s.upto).map(([k, s]) => ({ doc: k, ...s }));
-    const battery = get(`SELECT brand, serial_no, expiry_date FROM vehicle_parts WHERE vehicle_id=? AND kind='battery' AND status='active' ORDER BY id DESC LIMIT 1`, v.id);
+    const battery = get(`SELECT brand, serial_no, expiry_date, due_km FROM vehicle_parts WHERE vehicle_id=? AND kind='battery' AND status='active' ORDER BY id DESC LIMIT 1`, v.id);
     const bLeft = battery?.expiry_date ? Math.round((Date.parse(battery.expiry_date) - Date.parse(t)) / 864e5) : null;
+    const bKm = battery?.due_km != null ? Math.round(battery.due_km - vehicleOdometer(v.id)) : null;
     const check = get(`SELECT oil, coolant FROM daily_checks WHERE vehicle_id=? AND date=?`, v.id, t);
     return {
       id: v.id, reg_no: v.reg_no, model: v.model, fuel_type: v.fuel_type, main_fuel: primaryFuel(v.fuel_type), active: v.active,
@@ -740,7 +749,9 @@ route('GET', '/api/fleet', ({ user }) => {
       papers_known: papers.length,
       papers_expired: papers.filter((p) => p.status === 'expired').map((p) => p.doc),
       papers_due: papers.filter((p) => p.status === 'due').map((p) => ({ doc: p.doc, days_left: p.days_left })),
-      battery: battery ? { ...battery, days_left: bLeft, state: bLeft === null ? 'unknown' : bLeft < 0 ? 'expired' : bLeft <= 30 ? 'due' : 'ok' } : null,
+      battery: battery ? { ...battery, days_left: bLeft, km_left: bKm,
+        state: bLeft === null ? 'unknown' : bLeft < 0 ? 'expired' : bLeft <= 30 ? 'due' : 'ok',
+        km_state: bKm === null ? null : bKm <= 0 ? 'expired' : bKm <= kmWarn() ? 'due' : 'ok' } : null,
       check_today: check ? { done: true, low: check.oil === 'low' || check.coolant === 'low' } : { done: false },
       open_complaints: get(`SELECT COUNT(*) AS n FROM complaints WHERE vehicle_id=? AND status IN ('open','in_progress')`, v.id).n,
     };
@@ -749,6 +760,14 @@ route('GET', '/api/fleet', ({ user }) => {
 
 // --- reminders: expiry / warranty dates → in-app notifications + phone push
 const DOC_NAMES = { insurance: 'Insurance', pucc: 'Pollution (PUC)', fitness: 'Fitness certificate', tax: 'Road tax', permit: 'Permit' };
+/** Reminder stage for a distance: 'km500', 'km100' … then 'km-over-0', 'km-over-1' (every further 500 km overdue). */
+function kmStage(kmLeft) {
+  if (kmLeft === null || kmLeft === undefined) return null;
+  if (kmLeft <= 0) return `km-over-${Math.floor(-kmLeft / 500)}`;
+  const s = kmWarnStages().filter((x) => x >= kmLeft).sort((a, b) => a - b)[0];
+  return s === undefined ? null : `km${s}`;
+}
+const kmText = (left) => (left <= 0 ? `OVERDUE by ${Math.round(-left).toLocaleString('en-IN')} km` : `due in ${Math.round(left).toLocaleString('en-IN')} km`);
 const whenText = (d) => (d < 0 ? `expired ${-d} day${d === -1 ? '' : 's'} ago` : d === 0 ? 'expires TODAY' : `expires in ${d} day${d === 1 ? '' : 's'}`);
 const niceDay = (iso) => new Date(iso + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 /** Everything that has a date (or km) to remind about, with who should hear about it. */
@@ -768,18 +787,28 @@ function collectReminders() {
         title: `${v.reg_no}: ${label} ${whenText(s.days_left)}`,
         body: `${label} valid till ${niceDay(s.upto)}${k === 'insurance' && doc.insurance_company ? ` (${doc.insurance_company})` : ''}. ${s.days_left < 0 ? 'Renew it now.' : 'Please renew in time.'}` });
     }
-    for (const p of all(`SELECT * FROM vehicle_parts WHERE vehicle_id=? AND status='active' AND expiry_date IS NOT NULL`, v.id)) {
-      const d = Math.round((Date.parse(p.expiry_date + 'T00:00:00Z') - Date.parse(t + 'T00:00:00Z')) / 864e5);
-      const label = p.kind === 'battery' ? 'Battery warranty' : `${p.name}${p.kind === 'tyre' ? ' tyre warranty' : ''}`;
-      items.push({ key: `part:${p.id}:${p.expiry_date}`, kind: 'warranty', days_left: d, recipients: to, url,
-        title: `${v.reg_no}: ${label} ${whenText(d)}`,
-        body: `${[p.brand, p.serial_no && `S/N ${p.serial_no}`].filter(Boolean).join(' · ') || label} – valid till ${niceDay(p.expiry_date)}.` });
+    const odo = vehicleOdometer(v.id);
+    for (const p of all(`SELECT * FROM vehicle_parts WHERE vehicle_id=? AND status='active' AND (expiry_date IS NOT NULL OR due_km IS NOT NULL)`, v.id)) {
+      const what = [p.brand, p.serial_no && `S/N ${p.serial_no}`].filter(Boolean).join(' · ');
+      if (p.expiry_date) {
+        const d = Math.round((Date.parse(p.expiry_date + 'T00:00:00Z') - Date.parse(t + 'T00:00:00Z')) / 864e5);
+        const label = p.kind === 'battery' ? 'Battery warranty' : `${p.name}${p.kind === 'tyre' ? ' tyre warranty' : ''}`;
+        items.push({ key: `part:${p.id}:${p.expiry_date}`, kind: 'warranty', days_left: d, recipients: to, url,
+          title: `${v.reg_no}: ${label} ${whenText(d)}`, body: `${what || label} – valid till ${niceDay(p.expiry_date)}.` });
+      }
+      if (p.due_km !== null) {
+        const left = p.due_km - odo;
+        const label = p.kind === 'battery' ? 'Battery change' : p.kind === 'tyre' ? `Tyre change (${p.name}${p.position ? `, ${p.position}` : ''})` : `${p.name} replacement`;
+        items.push({ key: `partkm:${p.id}:${p.due_km}`, kind: 'warranty', stage: kmStage(left), recipients: to, url,
+          title: `${v.reg_no}: ${label} ${kmText(left)}`,
+          body: `${what ? `${what} – ` : ''}replace at ${Math.round(p.due_km).toLocaleString('en-IN')} km, odometer now ${Math.round(odo).toLocaleString('en-IN')} km.` });
+      }
     }
     const oil = oilStatus(v);
-    if (oil.oil_status === 'overdue' || oil.oil_status === 'due_soon') {
-      items.push({ key: `oil:${v.id}:${oil.oil_due_km}`, kind: 'oil', stage: oil.oil_status, recipients: to, url,
-        title: `${v.reg_no}: Oil change ${oil.oil_status === 'overdue' ? `OVERDUE by ${Math.round(-oil.oil_remaining_km)} km` : `due in ${Math.round(oil.oil_remaining_km)} km`}`,
-        body: `Due at ${Math.round(oil.oil_due_km)} km, odometer now ${Math.round(oil.current_km)} km.` });
+    if (usesOil(v.fuel_type) && oil.oil_due_km !== null) {
+      items.push({ key: `oil:${v.id}:${oil.oil_due_km}`, kind: 'oil', stage: kmStage(oil.oil_remaining_km), recipients: to, url,
+        title: `${v.reg_no}: Oil change ${kmText(oil.oil_remaining_km)}`,
+        body: `Due at ${Math.round(oil.oil_due_km).toLocaleString('en-IN')} km, odometer now ${Math.round(oil.current_km).toLocaleString('en-IN')} km.` });
     }
   }
   return items;

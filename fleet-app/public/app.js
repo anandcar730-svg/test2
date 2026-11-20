@@ -224,9 +224,14 @@ pages.dashboard = async (main) => {
       ? `<div class="alert warn">✅ Daily oil &amp; coolant check not done yet today. <a href="#/trips">Check now</a></div>` : ''}
     ${(d.fluid_alerts || []).map((c) => `<div class="alert ${c.oil === 'low' ? 'danger' : 'warn'}">🛢 <b>${esc(c.reg_no)}</b>: ${[c.oil === 'low' ? 'engine oil LOW' : '',
       c.coolant === 'low' ? 'coolant LOW' : ''].filter(Boolean).join(' and ')} (${niceDate(c.date)})${c.notes ? ` – ${esc(c.notes)}` : ''}</div>`).join('')}
-    ${(d.part_alerts || []).map((p) => `<div class="alert ${p.state === 'expired' ? 'danger' : 'warn'}">🔋 <b>${esc(p.reg_no)}</b>: ${esc(p.name)}${
-      p.serial_no ? ` (S/N ${esc(p.serial_no)})` : ''} ${p.kind === 'battery' ? 'warranty' : ''} ${p.state === 'expired' ? `<b>expired ${-p.days_left} day(s) ago</b>`
-      : `expires in ${p.days_left} day(s)`} (${niceDate(p.expiry_date)}) · <a href="#/vehicle/${p.vehicle_id}">View</a></div>`).join('')}
+    ${(d.part_alerts || []).map((p) => {
+      const byKm = p.km_state === 'expired' || (p.km_state === 'due' && p.date_state !== 'expired');
+      const what = `${esc(p.kind === 'battery' ? 'Battery' : p.name)}${p.serial_no ? ` (S/N ${esc(p.serial_no)})` : ''}`;
+      const txt = byKm
+        ? `${what} ${p.kind === 'battery' || p.kind === 'tyre' ? 'change' : 'replacement'} ${p.km_left <= 0 ? `<b>OVERDUE by ${fmt(-p.km_left)} km</b>` : `due in <b>${fmt(p.km_left)} km</b>`} (at ${fmt(p.due_km)} km)`
+        : `${what} ${p.kind === 'battery' ? 'warranty ' : ''}${p.days_left < 0 ? `<b>expired ${-p.days_left} day(s) ago</b>` : `expires in ${p.days_left} day(s)`} (${niceDate(p.expiry_date)})`;
+      return `<div class="alert ${p.state === 'expired' ? 'danger' : 'warn'}">${p.kind === 'tyre' ? '🛞' : '🔋'} <b>${esc(p.reg_no)}</b>: ${txt} · <a href="#/vehicle/${p.vehicle_id}">View</a></div>`;
+    }).join('')}
     ${d.complaints_open ? `<div class="alert ${d.complaints_high ? 'danger' : 'warn'}">📣 ${d.complaints_open} open complaint(s)${
       d.complaints_high ? `, <b>${d.complaints_high} high priority</b>` : ''}. <a href="#/complaints">View</a></div>` : ''}
     ${(d.doc_alerts || []).map((a) => `<div class="alert ${a.status === 'expired' ? 'danger' : 'warn'}">📄 ${docAlertText(a)}${
@@ -454,6 +459,8 @@ function fleetChips(v) {
   if (!v.papers_expired.length && !v.papers_due.length) out.push(v.papers_known ? chip('ok', '📄 Papers OK') : chip('', '📄 Papers not added'));
   if (v.oil_status === 'overdue') out.push(chip('danger', '🛢 Oil change overdue'));
   else if (v.oil_status === 'due_soon') out.push(chip('warn', `🛢 Oil change in ${fmt(v.oil_remaining_km)} km`));
+  if (v.battery?.km_state === 'expired') out.push(chip('danger', `🔋 Battery change OVERDUE ${fmt(-v.battery.km_left)} km`));
+  else if (v.battery?.km_state === 'due') out.push(chip('warn', `🔋 Battery change in ${fmt(v.battery.km_left)} km`));
   if (v.battery?.state === 'due') out.push(chip('warn', `🔋 Battery warranty ${daysText(v.battery.days_left)}`));
   if (v.check_today.done) out.push(v.check_today.low ? chip('danger', '🔴 Oil/coolant LOW') : chip('ok', '✅ Checked today'));
   else if (v.active) out.push(chip('', '⏳ Not checked today'));
@@ -461,7 +468,7 @@ function fleetChips(v) {
   return out.join('');
 }
 const needsAttention = (v) => v.papers_expired.length || v.papers_due.length || ['overdue', 'due_soon'].includes(v.oil_status)
-  || v.battery?.state === 'due' || (v.check_today.done && v.check_today.low) || v.open_complaints;
+  || v.battery?.state === 'due' || ['due', 'expired'].includes(v.battery?.km_state) || (v.check_today.done && v.check_today.low) || v.open_complaints;
 
 // --- Vehicles: everyone sees all vehicles as cards; the admin also manages the fleet here
 pages.vehicles = async (main) => {
@@ -522,7 +529,7 @@ function keyFacts(doc, battery, id) {
   const rows = [
     ...DOCS.filter(([k]) => d[k]?.upto).map(([k, l]) => row(l, `${docCell(d[k]).replace('<br>', ' ')}${k === 'insurance' && doc.insurance_company ? ` <small class="muted">${esc(doc.insurance_company)}</small>` : ''}`)),
     battery ? row('🔋 Battery', `${esc([battery.brand, battery.serial_no && `S/N ${battery.serial_no}`].filter(Boolean).join(' · ') || 'Battery')}${
-      battery.expiry_date ? ` – warranty till ${partExpiry(battery).replace('<br>', ' ')}` : ''}`) : '',
+      battery.expiry_date ? ` – warranty till ${partExpiry(battery).replace('<br>', ' ')}` : ''}${partKm(battery).replace('<br>', ' ')}`) : '',
     doc.registration_date ? row('Registered', `${niceDate(doc.registration_date)}${doc.registered_at ? ` · ${esc(doc.registered_at)}` : ''}`) : '',
     doc.chassis_no ? row('Chassis no.', esc(doc.chassis_no)) : '',
     doc.engine_no ? row('Engine no.', esc(doc.engine_no)) : '',
@@ -553,7 +560,7 @@ pages.vehicle = async (main, id) => {
     papers_expired: DOCS.filter(([k]) => docsS[k]?.status === 'expired').map(([k]) => k),
     papers_due: DOCS.filter(([k]) => docsS[k]?.status === 'due').map(([k]) => ({ doc: k, days_left: docsS[k].days_left })),
     oil_status: v.oil_status, oil_remaining_km: v.oil_remaining_km, active: v.active,
-    battery: battery ? { state: battery.state, days_left: battery.days_left } : null,
+    battery: battery ? { state: battery.date_state, days_left: battery.days_left, km_state: battery.km_state, km_left: battery.km_left } : null,
     check_today: (() => { const c = (d.checks || []).find((x) => x.date === today()); return c ? { done: true, low: c.oil === 'low' || c.coolant === 'low' } : { done: false }; })(),
     open_complaints: (d.complaints || []).filter((c) => c.status === 'open' || c.status === 'in_progress').length,
   };
@@ -863,11 +870,19 @@ function formDialog({ title, intro = '', fields, values = {}, submit = 'Save', o
 const partExpiry = (p) => (p.status === 'replaced'
   ? `<span class="badge">Replaced ${niceDate(p.replaced_on)}</span>`
   : docCell(p.expiry_date ? { upto: p.expiry_date, status: p.state === 'unknown' ? 'ok' : p.state, days_left: p.days_left } : null));
+/** "Replace at 15,060 km" with a badge: 90 km left / OVERDUE by 40 km */
+const partKm = (p) => {
+  if (p.status === 'replaced' || p.due_km === null || p.due_km === undefined) return '';
+  const left = p.km_left;
+  const cls = p.km_state === 'expired' ? 'danger' : p.km_state === 'due' ? 'warn' : 'ok';
+  return `<div style="margin-top:4px"><small>🛣 replace at <b>${fmt(p.due_km)} km</b></small>${left === null ? '' : `<br><span class="badge ${cls}">${
+    left <= 0 ? `OVERDUE by ${fmt(-left)} km` : `${fmt(left)} km left`}</span>`}</div>`;
+};
 function partDialog(vehicle, kind, part) {
   const isBattery = kind === 'battery', isTyre = kind === 'tyre';
   formDialog({
     title: `${part ? 'Edit' : 'Add'} ${isBattery ? 'battery' : isTyre ? 'tyre' : 'part'} – ${vehicle.reg_no}`,
-    intro: isBattery && !part ? 'Adding a new battery marks the previous one as replaced.' : 'Expiry is worked out from the installed date and warranty, or enter the expiry date yourself.',
+    intro: `${isBattery && !part ? 'Adding a new battery marks the previous one as replaced. ' : ''}Give a date (warranty / expiry), a distance (replace every … km), or both – reminders come before whichever is first.`,
     values: part || { installed_on: today(), name: isBattery ? 'Battery' : '' },
     fields: [
       ...(isBattery ? [] : [{ name: 'name', label: isTyre ? 'Tyre (size / model)' : 'Part name', required: true,
@@ -879,6 +894,9 @@ function partDialog(vehicle, kind, part) {
       { name: 'installed_km', label: 'Odometer when installed (km)', type: 'number' },
       { name: 'warranty_months', label: 'Warranty', type: 'select', options: WARRANTY_OPTS },
       { name: 'expiry_date', label: isBattery ? 'Warranty till (optional)' : 'Expiry / valid till', type: 'date', hint: 'Leave empty to use installed date + warranty' },
+      { name: 'life_km', label: isBattery ? 'Change battery every (km)' : isTyre ? 'Change tyre every (km)' : 'Replace every (km)', type: 'number',
+        placeholder: isBattery ? 'e.g. 60000' : isTyre ? 'e.g. 40000' : '', hint: 'Needs the odometer when installed. You get a warning ~500 km and ~100 km before.' },
+      { name: 'due_km', label: 'or: replace at odometer (km)', type: 'number', hint: 'Leave empty to use installed km + "every"' },
       { name: 'cost', label: 'Cost (₹)', type: 'number' },
       { name: 'vendor', label: 'Shop / vendor' },
       { name: 'notes', label: 'Notes', type: 'textarea' },
@@ -899,12 +917,12 @@ function partsCard(d, admin) {
     <button class="small" data-addpart="battery">+ Battery</button><button class="small" data-addpart="tyre">+ Tyre</button>
       <button class="small" data-addpart="other">+ Other part</button></div>
     ${rows.length ? `<div class="table-wrap" style="margin-top:10px"><table>
-      <tr><th>Part</th><th>Brand / serial no.</th><th>Installed</th><th>Warranty / expiry</th><th>Cost</th><th>Photo</th><th></th></tr>
+      <tr><th>Part</th><th>Brand / serial no.</th><th>Installed</th><th>Warranty / replace at</th><th>Cost</th><th>Photo</th><th></th></tr>
       ${rows.map((p) => `<tr style="${p.status === 'replaced' ? 'opacity:.55' : ''}"><td><b>${esc(p.kind === 'battery' ? '🔋 ' + p.name : p.kind === 'tyre' ? '🛞 ' + p.name : '🧩 ' + p.name)}</b>
           ${p.position ? `<br><small class="muted">${esc(p.position)}</small>` : ''}${p.notes ? `<br><small class="muted">${esc(p.notes)}</small>` : ''}</td>
         <td>${esc(p.brand || '—')}${p.serial_no ? `<br><small>S/N <b>${esc(p.serial_no)}</b></small>` : ''}</td>
         <td>${niceDate(p.installed_on)}${p.installed_km ? `<br><small class="muted">at ${fmt(p.installed_km)} km</small>` : ''}${p.vendor ? `<br><small class="muted">${esc(p.vendor)}</small>` : ''}</td>
-        <td>${partExpiry(p)}${p.warranty_months ? `<br><small class="muted">${p.warranty_months % 12 === 0 ? `${p.warranty_months / 12} yr` : `${p.warranty_months} months`} warranty</small>` : ''}</td>
+        <td>${p.expiry_date || p.status === 'replaced' || !p.due_km ? partExpiry(p) : ''}${p.warranty_months ? `<br><small class="muted">${p.warranty_months % 12 === 0 ? `${p.warranty_months / 12} yr` : `${p.warranty_months} months`} warranty</small>` : ''}${partKm(p)}</td>
         <td>${p.cost ? money(p.cost) : '—'}</td><td>${thumb(p.photo)}</td>
         <td style="white-space:nowrap"><button class="small" data-editpart="${p.id}">Edit</button>
           ${p.status === 'active' ? `<button class="small" data-replpart="${p.id}">Replaced</button>` : ''}${admin ? `<button class="small danger" data-delpart="${p.id}">Delete</button>` : ''}</td></tr>`).join('')}
@@ -1615,7 +1633,8 @@ pages.notifications = async (main) => {
   const ago = (iso) => dateTime(iso);
   main.innerHTML = `<div class="row"><h1 style="margin:0">🔔 Notifications</h1><span class="spacer"></span>
       ${d.unread ? '<button id="readall">✓ Mark all as read</button>' : ''}</div>
-    <p class="muted">Reminders for insurance, pollution (PUC), fitness, road tax, permit, battery &amp; part warranties and oil changes –
+    <p class="muted">Reminders for insurance, pollution (PUC), fitness, road tax, permit, battery &amp; part warranties, and – by distance – oil change, battery and part changes (${
+      esc((st?.km || '500,100').split(',').join(' and '))} km before) –
       ${admin ? 'all vehicles' : 'your vehicle'}. Sent ${st ? st.days.split(',').map((x) => (x === '0' ? 'on the day' : `${x}`)).join(', ').replace(/, on the day$/, ' days before and on the day') : '30, 15, 7, 3, 1 days before and on the day'}, then weekly while expired.</p>
 
     <div class="card"><h2>📱 Notifications on this phone / computer</h2>
@@ -1644,6 +1663,8 @@ pages.notifications = async (main) => {
     ${admin ? `<div class="card"><h2>⚙️ Reminder settings</h2><form id="nsf"><div class="fields">
         <label><span>Remind this many days before</span><input name="days" value="${esc(st.days.split(',').join(', '))}">
           <small class="muted">0 = on the day. After expiry a reminder is repeated every week.</small></label>
+        <label><span>Warn before oil change / battery &amp; part change (km)</span><input name="km" value="${esc((st.km || '500,100').split(',').join(', '))}">
+          <small class="muted">e.g. 500, 100 = a warning 500 km before and again ~100 km before. Overdue repeats every 500 km.</small></label>
         <label><span>Send reminders at</span><select name="hour">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === st.hour ? 'selected' : ''}>${String(h).padStart(2, '0')}:00</option>`).join('')}</select></label>
       </div><div class="actions"><button class="primary" type="submit">Save</button><button type="button" id="nrun">🔄 Check for reminders now</button></div></form>
       <p class="muted" style="margin-bottom:0">${st.last_run ? `Last check: ${ago(st.last_run.at)} – ${st.last_run.created} new reminder(s), ${st.last_run.pushed} sent to phones.` : 'Not checked yet.'}
@@ -1659,7 +1680,7 @@ pages.notifications = async (main) => {
   for (const a of $$('[data-nid]', main)) a.addEventListener('click', () => { api('/api/notifications/read', { method: 'POST', body: { id: a.dataset.nid } }).then(updateBell).catch(() => {}); });
   const nsf = $('#nsf', main);
   if (nsf) nsf.onsubmit = (e) => { e.preventDefault(); submitting(nsf, async () => {
-    await api('/api/notifications/settings', { method: 'PUT', body: { days: nsf.days.value, hour: Number(nsf.hour.value) } });
+    await api('/api/notifications/settings', { method: 'PUT', body: { days: nsf.days.value, km: nsf.km.value, hour: Number(nsf.hour.value) } });
     toast('Reminder settings saved'); route();
   }); };
   if (d.unread) setTimeout(updateBell, 0);

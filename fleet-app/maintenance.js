@@ -22,7 +22,8 @@ const COMPLAINT_STATUS = ['open', 'in_progress', 'resolved', 'rejected'];
 const PRIORITIES = ['low', 'normal', 'high'];
 const DUE_DAYS = 30;
 
-module.exports = function createMaintenance({ db, all, get, run, route, saveImage, getVehicle, num, str, isoDate, bad, HttpError, today, logChange = () => {} }) {
+module.exports = function createMaintenance({ db, all, get, run, route, saveImage, getVehicle, num, str, isoDate, bad, HttpError, today, logChange = () => {},
+  vehicleOdometer = () => null, kmWarn = () => 500 }) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS vehicle_parts (
       id INTEGER PRIMARY KEY,
@@ -82,12 +83,26 @@ module.exports = function createMaintenance({ db, all, get, run, route, saveImag
     if (t.getUTCDate() !== d) t.setUTCDate(0); // 31 Jan + 1 month → 28/29 Feb
     return t.toISOString().slice(0, 10);
   };
+  // v1.7: replacement by distance – "replace every N km" (life_km) or "replace at odometer X" (due_km)
+  const pcols = new Set(all(`PRAGMA table_info(vehicle_parts)`).map((c) => c.name));
+  if (!pcols.has('life_km')) db.exec(`ALTER TABLE vehicle_parts ADD COLUMN life_km REAL`);
+  if (!pcols.has('due_km')) db.exec(`ALTER TABLE vehicle_parts ADD COLUMN due_km REAL`);
   const daysLeft = (date, t = today()) => (date ? Math.round((Date.parse(date + 'T00:00:00Z') - Date.parse(t + 'T00:00:00Z')) / 864e5) : null);
+  /** Date (warranty / expiry) and distance (replace at km) status; `state` is the more urgent of the two. */
   const partStatus = (p) => {
-    if (p.status !== 'active') return { state: 'replaced', days_left: null };
+    if (p.status !== 'active') return { state: 'replaced', days_left: null, km_left: null, date_state: null, km_state: null };
     const d = daysLeft(p.expiry_date);
-    if (d === null) return { state: 'unknown', days_left: null };
-    return { state: d < 0 ? 'expired' : d <= DUE_DAYS ? 'due' : 'ok', days_left: d };
+    const dateState = d === null ? null : d < 0 ? 'expired' : d <= DUE_DAYS ? 'due' : 'ok';
+    let kmLeft = null, kmState = null;
+    if (p.due_km !== null && p.due_km !== undefined) {
+      const odo = vehicleOdometer(p.vehicle_id);
+      kmLeft = odo === null ? null : Math.round(p.due_km - odo);
+      if (kmLeft !== null) kmState = kmLeft <= 0 ? 'expired' : kmLeft <= kmWarn() ? 'due' : 'ok';
+    }
+    const rank = { expired: 3, due: 2, ok: 1 };
+    const states = [dateState, kmState].filter(Boolean);
+    const state = states.length ? states.sort((a, b) => rank[b] - rank[a])[0] : 'unknown';
+    return { state, days_left: d, km_left: kmLeft, date_state: dateState, km_state: kmState };
   };
   const withPart = (p) => ({ ...p, kind_label: PART_KINDS[p.kind] || p.kind, ...partStatus(p) });
   const pick = (v, list, field) => (list.includes(v) ? v : bad(`Choose a valid ${field}`));
@@ -105,6 +120,11 @@ module.exports = function createMaintenance({ db, all, get, run, route, saveImag
     if (body.expiry_date === undefined || body.expiry_date === '') {
       if (installed && months) expiry = addMonths(installed, months); // warranty years/months → expiry
     }
+    const installedKm = body.installed_km !== undefined ? num(body.installed_km, 'Odometer', { required: false }) : existing.installed_km ?? null;
+    const lifeKm = body.life_km !== undefined ? num(body.life_km, 'Replace every (km)', { required: false }) : existing.life_km ?? null;
+    let dueKm = body.due_km !== undefined && body.due_km !== '' ? num(body.due_km, 'Replace at (km)') : body.due_km === '' ? null : existing.due_km ?? null;
+    if ((body.due_km === undefined || body.due_km === '') && lifeKm && installedKm !== null) dueKm = installedKm + lifeKm; // every N km → odometer
+    if (lifeKm && installedKm === null && dueKm === null) bad('Enter the odometer when installed, so "replace every km" can be worked out');
     const name = str(body.name ?? existing.name ?? (kind === 'battery' ? 'Battery' : ''), 'Name', { max: 100 })
       || (kind === 'battery' ? 'Battery' : bad('Enter the part name'));
     return {
@@ -112,7 +132,7 @@ module.exports = function createMaintenance({ db, all, get, run, route, saveImag
       brand: str(body.brand ?? existing.brand, 'Brand', { max: 100 }),
       serial_no: str(body.serial_no ?? existing.serial_no, 'Serial number', { max: 100 }),
       position: str(body.position ?? existing.position, 'Position', { max: 30 }),
-      installed_km: body.installed_km !== undefined ? num(body.installed_km, 'Odometer', { required: false }) : existing.installed_km ?? null,
+      installed_km: installedKm, life_km: lifeKm || null, due_km: dueKm,
       cost: body.cost !== undefined ? num(body.cost, 'Cost', { required: false }) : existing.cost ?? null,
       vendor: str(body.vendor ?? existing.vendor, 'Shop / vendor', { max: 150 }),
       notes: str(body.notes ?? existing.notes, 'Notes'),
@@ -127,12 +147,12 @@ module.exports = function createMaintenance({ db, all, get, run, route, saveImag
     if (p.kind === 'battery' && body.replace_previous !== false) {
       run(`UPDATE vehicle_parts SET status='replaced', replaced_on=? WHERE vehicle_id=? AND kind='battery' AND status='active'`, p.installed_on || today(), v.id);
     }
-    const r = run(`INSERT INTO vehicle_parts (vehicle_id,kind,name,brand,serial_no,position,installed_on,installed_km,warranty_months,expiry_date,cost,vendor,photo,notes,created_by)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    const r = run(`INSERT INTO vehicle_parts (vehicle_id,kind,name,brand,serial_no,position,installed_on,installed_km,warranty_months,expiry_date,cost,vendor,photo,notes,created_by,life_km,due_km)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       v.id, p.kind, p.name, p.brand, p.serial_no, p.position, p.installed_on, p.installed_km, p.warranty_months, p.expiry_date, p.cost, p.vendor,
-      saveImage(body.photo), p.notes, user.id);
+      saveImage(body.photo), p.notes, user.id, p.life_km, p.due_km);
     const added = withPart(get(`SELECT * FROM vehicle_parts WHERE id=?`, Number(r.lastInsertRowid)));
-    logChange(v.id, user.id, `Added ${partLabel(added)}${added.expiry_date ? ` – valid till ${added.expiry_date}` : ''}`);
+    logChange(v.id, user.id, `Added ${partLabel(added)}${added.expiry_date ? ` – valid till ${added.expiry_date}` : ''}${added.due_km ? ` – replace at ${Math.round(added.due_km)} km` : ''}`);
     return added;
   });
   route('PUT', '/api/parts/:id', ({ user, params, body }) => {
@@ -147,11 +167,11 @@ module.exports = function createMaintenance({ db, all, get, run, route, saveImag
       replacedOn = status === 'replaced' ? (body.replaced_on ? isoDate(body.replaced_on) : today()) : null;
     }
     run(`UPDATE vehicle_parts SET kind=?,name=?,brand=?,serial_no=?,position=?,installed_on=?,installed_km=?,warranty_months=?,expiry_date=?,
-           cost=?,vendor=?,photo=?,notes=?,status=?,replaced_on=? WHERE id=?`,
+           cost=?,vendor=?,photo=?,notes=?,status=?,replaced_on=?,life_km=?,due_km=? WHERE id=?`,
       p.kind, p.name, p.brand, p.serial_no, p.position, p.installed_on, p.installed_km, p.warranty_months, p.expiry_date,
-      p.cost, p.vendor, photo, p.notes, status, replacedOn, cur.id);
+      p.cost, p.vendor, photo, p.notes, status, replacedOn, p.life_km, p.due_km, cur.id);
     const after = withPart(get(`SELECT * FROM vehicle_parts WHERE id=?`, cur.id));
-    const changed = ['name', 'brand', 'serial_no', 'position', 'installed_on', 'installed_km', 'expiry_date', 'cost', 'vendor', 'notes', 'photo', 'status']
+    const changed = ['name', 'brand', 'serial_no', 'position', 'installed_on', 'installed_km', 'expiry_date', 'due_km', 'cost', 'vendor', 'notes', 'photo', 'status']
       .filter((k) => String(cur[k] ?? '') !== String(after[k] ?? ''));
     if (changed.length) {
       logChange(cur.vehicle_id, user.id, after.status === 'replaced' && cur.status !== 'replaced'
@@ -291,9 +311,11 @@ module.exports = function createMaintenance({ db, all, get, run, route, saveImag
     const admin = isAdmin(user);
     const mine = admin ? null : new Set(all(`SELECT id FROM vehicles WHERE assigned_driver_id=?`, user.id).map((x) => x.id));
     const scope = (vid) => admin || mine.has(vid);
+    const sev = { expired: 0, due: 1 };
     const parts = all(`SELECT p.*, v.reg_no FROM vehicle_parts p JOIN vehicles v ON v.id=p.vehicle_id
-                       WHERE p.status='active' AND v.active=1 AND p.expiry_date IS NOT NULL`).map(withPart)
-      .filter((p) => (p.state === 'expired' || p.state === 'due') && scope(p.vehicle_id)).sort((a, b) => a.days_left - b.days_left);
+                       WHERE p.status='active' AND v.active=1 AND (p.expiry_date IS NOT NULL OR p.due_km IS NOT NULL)`).map(withPart)
+      .filter((p) => (p.state === 'expired' || p.state === 'due') && scope(p.vehicle_id))
+      .sort((a, b) => sev[a.state] - sev[b.state] || (a.km_left ?? a.days_left ?? 0) - (b.km_left ?? b.days_left ?? 0));
     const checks = todayChecks();
     const low = all(`SELECT c.*, v.reg_no FROM daily_checks c JOIN vehicles v ON v.id=c.vehicle_id
                      WHERE c.date>=? AND (c.oil='low' OR c.coolant='low') ORDER BY c.date DESC`, today(-2)).filter((c) => scope(c.vehicle_id));

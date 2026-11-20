@@ -118,6 +118,8 @@ These are on each **vehicle page**:
 ## Notifications for expiry and warranty dates
 Reminders cover **insurance, PUC, fitness, road tax, permit, battery / tyre / part warranties** and **oil change due**:
 - **When:** 30, 15, 7, 3 and 1 days before, on the day, then **weekly while expired**. The admin can change these days and the time (08:00 by default).
+- **By distance:** reminders for the **oil change** and **battery / tyre / part changes** come **~500 km and ~100 km before** they are due, then *OVERDUE*, repeating every further 500 km overdue. The distances can be changed in the reminder settings.
+  - For a part, set **"change every … km"** (from the odometer when installed) or **"replace at … km"** when adding it. A part can have both a date and a distance; the reminder comes before whichever is first.
 - **Who:** the admin gets reminders for all vehicles; a driver gets reminders for their assigned vehicle.
 - **Where:**
   - the **🔔 bell** in the top bar (with an unread count) and the Notifications page
