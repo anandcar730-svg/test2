@@ -7,6 +7,7 @@ The Driver Log Shalom website in an Android app, plus **location sharing during 
 - **Start trip**: the website asks the app to start a *foreground service* (Android shows the notification "Driver Log Shalom – sharing location"). The service records GPS every ~30 s, or sooner after 50 m, with the screen off. **End trip** stops it.
 - Points are queued in a file on the phone and sent to `/api/osmand` every ~45 s. With no signal they wait and are sent later.
 - Works without Google Play services (uses Android's own `LocationManager`).
+- **Reminders as phone notifications**: website push doesn't work inside an app, so the app checks `/api/notifications` with its login every 30 minutes (JobScheduler; also after a restart, and when the app opens) and shows new reminders as Android notifications. Tapping one opens the vehicle. No Firebase is needed.
 - Camera photos, file and PDF uploads, and PDF / CSV downloads (saved to *Downloads*) work inside the app.
 - Needs Android 7.0 or newer.
 

@@ -9,6 +9,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- keep the reminder check scheduled after the phone restarts -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- so the camera app can be offered for photos (Android 11+ package visibility) -->
     <queries>
@@ -42,6 +44,12 @@
             android:name=".LocationService"
             android:exported="false"
             android:foregroundServiceType="location" />
+
+        <!-- checks the website for new reminders every 30 minutes and shows them as notifications -->
+        <service
+            android:name=".ReminderJob"
+            android:exported="true"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

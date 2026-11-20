@@ -45,6 +45,8 @@ class MainActivity : Activity() {
     private var pendingStart: Triple<String, String, String>? = null
 
     companion object {
+        const val EXTRA_OPEN_URL = "open_url"
+        private const val REQ_NOTIFICATIONS = 30
         private const val REQ_FILE = 10
         private const val REQ_WEB_LOCATION = 20
         private const val REQ_TRACKING = 21
@@ -74,6 +76,13 @@ class MainActivity : Activity() {
                 // phone numbers, Google Maps, Play Store … open in their own apps
                 try { startActivity(Intent(Intent.ACTION_VIEW, url)) } catch (_: Exception) {}
                 return true
+            }
+
+            override fun onPageFinished(view: WebView, url: String?) {
+                super.onPageFinished(view, url)
+                // remember the login for the background reminder check, and look for new reminders
+                Reminders.saveCookie(this@MainActivity, CookieManager.getInstance().getCookie(BuildConfig.BASE_URL))
+                Reminders.checkSoon(this@MainActivity)
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -109,7 +118,38 @@ class MainActivity : Activity() {
             download(url, userAgent, contentDisposition, mimeType)
         }
 
-        if (savedInstanceState != null) web.restoreState(savedInstanceState) else web.loadUrl(BuildConfig.BASE_URL)
+        if (savedInstanceState != null) web.restoreState(savedInstanceState) else web.loadUrl(startUrl(intent))
+
+        Reminders.schedule(this)
+        askNotificationPermissionOnce()
+    }
+
+    /** A reminder notification was tapped: open the page it belongs to. */
+    private fun startUrl(i: Intent?): String {
+        val path = i?.getStringExtra(EXTRA_OPEN_URL)
+        return if (path != null && path.startsWith("/")) BuildConfig.BASE_URL.trimEnd('/') + path else BuildConfig.BASE_URL
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getStringExtra(EXTRA_OPEN_URL) != null) web.loadUrl(startUrl(intent))
+    }
+
+    private fun askNotificationPermissionOnce() {
+        if (Build.VERSION.SDK_INT < 33 || Reminders.allowed(this)) return
+        val prefs = getSharedPreferences("app", MODE_PRIVATE)
+        if (prefs.getBoolean("asked_notifications", false)) return
+        prefs.edit().putBoolean("asked_notifications", true).apply()
+        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS)
+    }
+
+    private fun openNotificationSettings() {
+        try {
+            val i = if (Build.VERSION.SDK_INT >= 26) Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+            else Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+            startActivity(i)
+        } catch (_: Exception) {
+        }
     }
 
     // ------------------------------------------------------------------ bridge for the website
@@ -156,6 +196,25 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun version(): String = BuildConfig.VERSION_NAME
+
+        /** Reminders appear as phone notifications from the app (checked every 30 minutes). */
+        @JavascriptInterface
+        fun notificationsAllowed(): Boolean = Reminders.allowed(this@MainActivity)
+
+        @JavascriptInterface
+        fun openNotificationSettings() {
+            runOnUiThread {
+                if (Build.VERSION.SDK_INT >= 33 && !Reminders.allowed(this@MainActivity)) {
+                    requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS)
+                } else this@MainActivity.openNotificationSettings()
+            }
+        }
+
+        /** Look for new reminders right away (e.g. after the admin pressed "Check now"). */
+        @JavascriptInterface
+        fun checkReminders() {
+            Reminders.checkSoon(this@MainActivity)
+        }
     }
 
     private fun trusted(): Boolean = Uri.parse(web.url ?: "").host == baseHost
@@ -201,6 +260,10 @@ class MainActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         when (requestCode) {
+            REQ_NOTIFICATIONS -> {
+                if (Reminders.allowed(this)) Reminders.checkSoon(this)
+                web.evaluateJavascript("window.onDriverLogApp && window.onDriverLogApp('notifications')", null)
+            }
             REQ_WEB_LOCATION -> {
                 geoCallback?.invoke(geoOrigin, hasLocation(), false)
                 geoCallback = null

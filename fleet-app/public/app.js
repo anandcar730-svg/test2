@@ -1647,6 +1647,18 @@ async function updateBell() {
 setInterval(updateBell, 5 * 60e3);
 const notifIcon = (k) => ({ document: '📄', warranty: '🔋', oil: '🛢' }[k] || '🔔');
 
+/** Inside the Android app: reminders come as the app's own notifications (it checks every 30 minutes). */
+function appNotifCard() {
+  const app = nativeApp();
+  let allowed = true;
+  try { allowed = app.notificationsAllowed(); } catch { /* older app */ }
+  return `<div class="card"><h2>📱 Notifications on this phone</h2>
+    ${allowed ? `<p>✅ <b>On.</b> The Driver Log Shalom app checks for new reminders every 30 minutes – also when the app is closed –
+        and shows them as phone notifications. Tap one to open the vehicle.</p>`
+      : `<div class="alert warn">Notifications are <b>off</b> for the Driver Log Shalom app. Allow them to get reminders on this phone.</div>`}
+    <div class="actions"><button id="appnotif" class="${allowed ? '' : 'primary'}">${allowed ? '⚙️ Notification settings' : '🔔 Allow notifications'}</button>
+      <button id="appcheck">🔄 Check now</button></div></div>`;
+}
 pages.notifications = async (main) => {
   const admin = state.user.role === 'admin';
   const [d, st, sub] = await Promise.all([api('/api/notifications'), admin ? api('/api/notifications/settings') : null, currentPushSub().catch(() => null)]);
@@ -1659,11 +1671,9 @@ pages.notifications = async (main) => {
       esc((st?.km || '500,100').split(',').join(' and '))} km before) –
       ${admin ? 'all vehicles' : 'your vehicle'}. Sent ${st ? st.days.split(',').map((x) => (x === '0' ? 'on the day' : `${x}`)).join(', ').replace(/, on the day$/, ' days before and on the day') : '30, 15, 7, 3, 1 days before and on the day'}, then weekly while expired.</p>
 
-    <div class="card"><h2>📱 Notifications on this phone / computer</h2>
+    ${nativeApp() ? appNotifCard() : `<div class="card"><h2>📱 Notifications on this phone / computer</h2>
       ${onHere ? `<p>✅ <b>On</b> for this device (${esc(deviceName())}). Reminders pop up even when the website is closed.</p>`
         : blocked ? '<div class="alert warn">Notifications are <b>blocked</b> for this site. Open the browser\'s site settings (🔒 next to the address) → Notifications → Allow, then reload.</div>'
-        : nativeApp() ? `<div class="alert">Inside the Driver Log Shalom app, reminders appear here and on the 🔔 bell. To also get pop-ups when the app is closed,
-            open <b>${esc(location.host)}</b> once in <b>Chrome</b> and turn notifications on there.</div>`
         : !pushSupported() && isIOS() && !isStandalone() ? `<div class="alert warn"><b>iPhone:</b> tap <b>Share ⬆️ → Add to Home Screen</b>, then open Driver Log Shalom from the
             home screen and turn notifications on there (needs iOS 16.4 or newer).</div>`
         : '<p class="muted">Off on this device. Turn it on to get reminders like a WhatsApp message.</p>'}
@@ -1675,7 +1685,7 @@ pages.notifications = async (main) => {
           📱 ${esc(x.device || 'Device')} <small class="muted">· since ${ago(x.created_at)}${x.last_ok_at ? ` · last delivered ${ago(x.last_ok_at)}` : ''}</small>
           ${x.last_error ? `<br><small style="color:var(--danger)">⚠ ${esc(x.last_error)}</small>` : ''}
           <button class="small" data-rmdev="${x.id}" style="float:right">Remove</button></li>`).join('')}</ul>` : ''}
-    </div>
+    </div>`}
 
     <div class="card"><h2>Reminders ${d.unread ? `<span class="badge danger">${d.unread} new</span>` : ''}</h2>
       ${d.items.length ? `<ul class="notifs">${d.items.map((n) => `<li class="${n.read_at ? '' : 'unread'}"><a href="${esc(n.url || '#/notifications')}" data-nid="${n.id}">
@@ -1699,7 +1709,9 @@ pages.notifications = async (main) => {
   btn('#poff', async () => { await disablePush(); toast('Notifications turned off on this device'); route(); });
   btn('#ptest', async () => { const r = await api('/api/push/test', { method: 'POST' }); toast(`Test sent to ${r.sent} device(s)${r.failed ? `, ${r.failed} failed` : ''}`); });
   btn('#readall', async () => { await api('/api/notifications/read', { method: 'POST', body: {} }); route(); });
-  btn('#nrun', async () => { const r = await api('/api/notifications/run', { method: 'POST' }); toast(`${r.created} new reminder(s), ${r.pushed} sent to phones`); route(); });
+  btn('#appnotif', async () => { nativeApp()?.openNotificationSettings(); });
+  btn('#appcheck', async () => { nativeApp()?.checkReminders(); toast('Checking for new reminders…'); });
+  btn('#nrun', async () => { const r = await api('/api/notifications/run', { method: 'POST' }); try { nativeApp()?.checkReminders(); } catch { /* old app */ } toast(`${r.created} new reminder(s), ${r.pushed} sent to phones`); route(); });
   for (const b of $$('[data-rmdev]', main)) b.onclick = async () => { await api('/api/push/unsubscribe', { method: 'POST', body: { id: b.dataset.rmdev } }); route(); };
   for (const a of $$('[data-nid]', main)) a.addEventListener('click', () => { api('/api/notifications/read', { method: 'POST', body: { id: a.dataset.nid } }).then(updateBell).catch(() => {}); });
   const nsf = $('#nsf', main);
@@ -1812,6 +1824,7 @@ function stopNativeTracking() {
 window.onDriverLogApp = (event) => {
   if (event === 'denied') { toast('Location permission is needed to record the trip route', true); tracker.native = null; renderGpsBar(); }
   if (event === 'resume') { renderGpsBar(); if (state.user) resumeTracking(); }
+  if (event === 'notifications' && location.hash.includes('notifications')) route();
 };
 
 function renderGpsBar() {
