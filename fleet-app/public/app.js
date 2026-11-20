@@ -296,7 +296,8 @@ pages.trips = async (main) => {
         ${kmField('start_km', 'Starting kilometer (odometer)')}
         ${photoField('start_photo', 'Photo of odometer (start)')}
         <p class="full muted" style="margin:0">📍 When you start, your location is shared with the admin <b>only while this trip is running</b> (until End trip).
-          Allow location when the phone asks, and keep the app open on screen while driving.</p>
+          Allow location when the phone asks, and keep the app open on screen while driving –
+          or set up <a href="#/profile">background location (screen off)</a> once.</p>
       </div><div class="actions"><button class="primary" type="submit">Start trip</button></div></form></div>`}
     <div class="card"><h2>History</h2>${filtersBar('flt')}<div id="list"></div></div>`;
 
@@ -1449,9 +1450,10 @@ pages.drivers = async (main) => {
       <label><span>Role</span><select name="role"><option value="driver">Driver</option><option value="admin">Admin / supervisor</option></select></label>
     </div><div class="actions"><button class="primary" type="submit">Create login</button></div></form></div>
     <div class="card"><h2>All users</h2><div class="table-wrap"><table>
-      <tr><th>Name</th><th>Username</th><th>Role</th><th>Phone</th><th>Licence</th><th>Status</th><th></th></tr>
+      <tr><th>Name</th><th>Username</th><th>Role</th><th>Phone</th><th>Licence</th><th>Status</th><th>📡 GPS app</th><th></th></tr>
       ${users.map((u) => `<tr><td>${esc(u.name)}</td><td>${esc(u.username)}</td><td>${esc(u.role)}</td><td>${esc(u.phone)}</td>
         <td>${esc(u.license_no)}</td><td><span class="badge ${u.active ? 'ok' : ''}">${u.active ? 'active' : 'disabled'}</span></td>
+        <td>${u.tracking_last_at ? `<small>last seen<br>${dateTime(u.tracking_last_at)}</small>` : '<small class="muted">not set up</small>'}</td>
         <td class="row"><button class="small" data-pw="${u.id}">Reset password</button>
         ${u.id !== state.user.id ? `<button class="small ${u.active ? 'danger' : ''}" data-act="${u.id}:${u.active ? 0 : 1}">${u.active ? 'Disable' : 'Enable'}</button>` : ''}</td></tr>`).join('')}
     </table></div></div>`;
@@ -1479,12 +1481,50 @@ pages.profile = async (main) => {
     <div class="card"><h2>Change password</h2><form id="f"><div class="fields">
       <label><span>Current password</span><input type="password" name="current" required autocomplete="current-password"></label>
       <label><span>New password</span><input type="password" name="next" minlength="6" required autocomplete="new-password"></label>
-    </div><div class="actions"><button class="primary" type="submit">Update password</button></div></form></div>`;
+    </div><div class="actions"><button class="primary" type="submit">Update password</button></div></form></div>
+    <div class="card" id="bgtrack"><h2>📡 Background location (screen off)</h2><p class="muted">Loading…</p></div>`;
   const f = $('#f', main);
   f.onsubmit = (e) => { e.preventDefault(); submitting(f, async () => {
     await api('/api/me/password', { method: 'POST', body: formData(f) }); toast('Password updated'); f.reset();
   }); };
+  renderBgTracking($('#bgtrack', main), await api('/api/me/tracking'));
 };
+
+/** Set-up card for Traccar Client – free GPS app that keeps sending the location with the screen off. */
+function renderBgTracking(box, t) {
+  const server = `${location.origin}/api/osmand`;
+  const android = /Android/.test(navigator.userAgent), ios = /iPhone|iPad/.test(navigator.userAgent);
+  const copy = (txt) => `<button type="button" class="small" data-copy="${esc(txt)}">📋 Copy</button>`;
+  box.innerHTML = `<h2>📡 Background location (screen off)</h2>
+    <p>A website can only use GPS while it is open on the screen – phones block it in the background. To keep sharing your location
+      with the <b>screen off</b> during trips, install the free <b>Traccar Client</b> app once:</p>
+    <ol class="steps">
+      <li>Install <b>Traccar Client</b> from the ${ios ? '<a href="https://apps.apple.com/app/traccar-client/id843156974" target="_blank" rel="noopener">App Store</a>'
+        : '<a href="https://play.google.com/store/apps/details?id=org.traccar.client" target="_blank" rel="noopener">Play Store</a>'}${android || ios ? '' : ' (Android) or App Store (iPhone)'}.</li>
+      <li>Open it and enter:
+        <div class="kv"><span>Device identifier</span><code>${esc(t.device_id)}</code>${copy(t.device_id)}</div>
+        <div class="kv"><span>Server URL</span><code>${esc(server)}</code>${copy(server)}</div>
+        <div class="kv"><span>Location accuracy</span><b>High</b></div>
+        <div class="kv"><span>Frequency</span><b>30</b> seconds · Distance <b>50</b> m (or 0)</div></li>
+      <li>Allow location <b>"All the time"</b> (${ios ? 'Settings → Traccar Client → Location → Always' : 'Android: Permissions → Location → Allow all the time'})
+        ${ios ? '' : 'and set Battery → <b>Unrestricted</b> / turn off battery optimisation for Traccar Client'}.</li>
+      <li>Switch the service <b>on</b> in Traccar Client. Keep using <b>Start trip / End trip</b> here as usual.</li>
+    </ol>
+    <p class="muted">Only positions <b>during your trips</b> are saved – anything sent outside a trip is thrown away. You can switch the
+      service off in Traccar Client when you are off duty.</p>
+    <p>Status: ${t.last_at ? `✅ last received from the app <b>${dateTime(t.last_at)}</b>` : '⏳ nothing received from the app yet'}</p>
+    <div class="actions"><button type="button" class="small" id="bgreset">🔄 New identifier</button>
+      <small class="muted">Use if the identifier was shared by mistake – then enter the new one in the app.</small></div>`;
+  for (const b of $$('[data-copy]', box)) b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); toast('Copied'); }
+    catch { prompt('Copy this:', b.dataset.copy); }
+  };
+  $('#bgreset', box).onclick = async () => {
+    if (!confirm('Make a new identifier? The old one stops working, so you must enter the new one in Traccar Client.')) return;
+    renderBgTracking(box, await api('/api/me/tracking/reset', { method: 'POST' }));
+    toast('New identifier made – update it in Traccar Client');
+  };
+}
 
 // ------------------------------------------------------------------ shell & routing
 const NAV = [
@@ -1758,7 +1798,8 @@ pages.live = async (main) => {
       <tr><th>Vehicle</th><th>Driver</th><th>Last position</th><th>Speed</th><th>Since</th><th></th></tr>
       ${rows.map((r) => `<tr><td><b>${vlink(r.vehicle_id, r.reg_no)}</b><br><small class="muted">${esc(r.model || '')}</small></td>
         <td>${esc(r.driver_name)}${r.driver_phone ? `<br><a href="tel:${esc(r.driver_phone)}">📞 ${esc(r.driver_phone)}</a>` : ''}</td>
-        <td>${r.last ? `${ageText(r.age_min)}${r.age_min > 10 ? ' <span class="badge warn">no signal</span>' : ''}<br><small class="muted">±${Math.round(r.last.accuracy || 0)} m</small>`
+        <td>${r.last ? `${ageText(r.age_min)}${r.age_min > 10 ? ' <span class="badge warn">no signal</span>' : ''}<br><small class="muted">±${Math.round(r.last.accuracy || 0)} m · ${
+          r.last.source === 'app' ? '📡 GPS app' : '🌐 website'}</small>`
           : '<span class="badge">no GPS shared</span>'}</td>
         <td>${r.last ? kmh(r.last.speed) : '—'}</td><td>${esc(r.started_at ? dateTime(r.started_at) : r.date)}<br><small class="muted">${fmt(r.start_km)} km</small></td>
         <td style="white-space:nowrap"><a class="btn small" href="#/trip-map/${r.trip_id}">🗺 Route</a>${r.last ? ` <a class="btn small" href="${gmaps(r.last.lat, r.last.lng)}" target="_blank" rel="noopener">Google Maps</a>` : ''}</td></tr>`).join('')}

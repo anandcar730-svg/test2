@@ -61,6 +61,12 @@ module.exports = function createTracking({ db, all, get, run, route, bad, HttpEr
   `);
   const have = new Set(all(`PRAGMA table_info(trips)`).map((c) => c.name));
   for (const c of ['start_lat', 'start_lng', 'end_lat', 'end_lng']) if (!have.has(c)) db.exec(`ALTER TABLE trips ADD COLUMN ${c} REAL`);
+  // where a point came from: 'web' (the website while open) or 'app' (GPS app in the background, e.g. Traccar Client)
+  if (!all(`PRAGMA table_info(trip_locations)`).some((c) => c.name === 'source')) db.exec(`ALTER TABLE trip_locations ADD COLUMN source TEXT NOT NULL DEFAULT 'web'`);
+  const ucols = new Set(all(`PRAGMA table_info(users)`).map((c) => c.name));
+  if (!ucols.has('tracking_token')) db.exec(`ALTER TABLE users ADD COLUMN tracking_token TEXT`);
+  if (!ucols.has('tracking_last_at')) db.exec(`ALTER TABLE users ADD COLUMN tracking_last_at TEXT`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS users_tracking_token ON users(tracking_token) WHERE tracking_token IS NOT NULL`);
 
   const validPoint = (p) => {
     const lat = Number(p?.lat), lng = Number(p?.lng);
@@ -71,8 +77,8 @@ module.exports = function createTracking({ db, all, get, run, route, bad, HttpEr
     if (Number.isNaN(at.getTime()) || at.getTime() > Date.now() + 5 * 60e3 || at.getTime() < Date.now() - 7 * 864e5) return null;
     return { lat: +lat.toFixed(6), lng: +lng.toFixed(6), accuracy: n(p.accuracy, 100000), speed: n(p.speed, 120), heading: n(p.heading, 360), at: at.toISOString() };
   };
-  const insertPoint = (t, p) => run(`INSERT OR IGNORE INTO trip_locations (trip_id,driver_id,vehicle_id,lat,lng,accuracy,speed,heading,recorded_at) VALUES (?,?,?,?,?,?,?,?,?)`,
-    t.id, t.driver_id, t.vehicle_id, p.lat, p.lng, p.accuracy, p.speed, p.heading, p.at).changes;
+  const insertPoint = (t, p, source = 'web') => run(`INSERT OR IGNORE INTO trip_locations (trip_id,driver_id,vehicle_id,lat,lng,accuracy,speed,heading,recorded_at,source)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`, t.id, t.driver_id, t.vehicle_id, p.lat, p.lng, p.accuracy, p.speed, p.heading, p.at, source).changes;
 
   /** Called when a trip starts / ends with the phone's position (optional). */
   function onStart(tripId, body) {
@@ -113,7 +119,7 @@ module.exports = function createTracking({ db, all, get, run, route, bad, HttpEr
   route('GET', '/api/trips/:id/route', ({ user, params }) => {
     const t = tripOr404(params.id);
     if (!canSee(user, t)) throw new HttpError(403, 'Not your trip');
-    const points = all(`SELECT lat, lng, accuracy, speed, heading, recorded_at FROM trip_locations WHERE trip_id=? ORDER BY recorded_at`, t.id);
+    const points = all(`SELECT lat, lng, accuracy, speed, heading, recorded_at, source FROM trip_locations WHERE trip_id=? ORDER BY recorded_at`, t.id);
     return {
       trip: { id: t.id, reg_no: t.reg_no, vehicle_id: t.vehicle_id, driver_name: t.driver_name, date: t.date, start_km: t.start_km, end_km: t.end_km,
         odometer_km: t.end_km === null ? null : t.end_km - t.start_km, started_at: t.started_at, ended_at: t.ended_at, open: t.end_km === null,
@@ -130,7 +136,7 @@ module.exports = function createTracking({ db, all, get, run, route, bad, HttpEr
                       FROM trips t JOIN vehicles v ON v.id=t.vehicle_id JOIN users u ON u.id=t.driver_id
                       WHERE t.end_km IS NULL ${user.role === 'admin' ? '' : 'AND t.driver_id=:me'} ORDER BY v.reg_no`,
     user.role === 'admin' ? {} : { me: user.id });
-    const last = db.prepare(`SELECT lat, lng, accuracy, speed, heading, recorded_at FROM trip_locations WHERE trip_id=? ORDER BY recorded_at DESC LIMIT 1`);
+    const last = db.prepare(`SELECT lat, lng, accuracy, speed, heading, recorded_at, source FROM trip_locations WHERE trip_id=? ORDER BY recorded_at DESC LIMIT 1`);
     const count = db.prepare(`SELECT COUNT(*) AS n FROM trip_locations WHERE trip_id=?`);
     return rows.map((r) => {
       const l = last.get(r.trip_id);
@@ -138,6 +144,73 @@ module.exports = function createTracking({ db, all, get, run, route, bad, HttpEr
         age_min: l ? Math.round((Date.now() - Date.parse(l.recorded_at)) / 60e3) : null };
     });
   });
+
+  // ------------------------------------------------------------------ background tracking with a GPS app (Traccar Client)
+  // Phones only let installed apps use GPS with the screen off. Traccar Client (free, Play Store / App Store) sends positions
+  // to   https://<site>/api/osmand   with the driver's private "device identifier". Both formats are accepted:
+  //   classic OsmAnd: ?id=..&lat=..&lon=..&timestamp=<unix s>&speed=<knots>&bearing=..&accuracy=..   (GET or POST)
+  //   JSON (Traccar Client 9+): {"device_id": "..", "location": {"timestamp": ISO, "coords": {latitude, longitude, accuracy, speed m/s, heading}}}
+  // Points are stored only if they fall inside one of that driver's trips (between Start trip and End trip); others are dropped.
+  const crypto = require('node:crypto');
+  const newToken = () => crypto.randomBytes(12).toString('base64url').replace(/[-_]/g, '').slice(0, 12).toUpperCase().padEnd(12, 'X');
+  function tokenFor(userId, reset = false) {
+    let t = get(`SELECT tracking_token FROM users WHERE id=?`, userId)?.tracking_token;
+    if (!t || reset) {
+      for (let i = 0; i < 5; i++) {
+        t = newToken();
+        try { run(`UPDATE users SET tracking_token=? WHERE id=?`, t, userId); break; } catch { /* clash – try again */ }
+      }
+    }
+    return t;
+  }
+  route('GET', '/api/me/tracking', ({ user }) => ({ device_id: tokenFor(user.id),
+    last_at: get(`SELECT tracking_last_at FROM users WHERE id=?`, user.id).tracking_last_at }));
+  route('POST', '/api/me/tracking/reset', ({ user }) => ({ device_id: tokenFor(user.id, true), last_at: null }));
+
+  function parseGpsApp(query, body) {
+    const b = body && typeof body === 'object' ? body : {};
+    const q = (k) => query.get(k) ?? (b[k] !== undefined && typeof b[k] !== 'object' ? b[k] : undefined);
+    const id = String(q('id') ?? q('deviceid') ?? b.device_id ?? b.deviceId ?? '').trim();
+    const pts = [];
+    const locs = b.location ? [].concat(b.location) : Array.isArray(b.locations) ? b.locations : [];
+    for (const l of locs) {
+      const c = l?.coords || l || {};
+      pts.push({ lat: c.latitude ?? c.lat, lng: c.longitude ?? c.lon ?? c.lng, accuracy: c.accuracy,
+        speed: Number(c.speed) >= 0 ? Number(c.speed) : null, heading: Number(c.heading) >= 0 ? Number(c.heading) : null, at: l?.timestamp });
+    }
+    if (!pts.length && q('lat') !== undefined) {
+      const ts = q('timestamp');
+      let at;
+      if (ts === undefined || ts === '') at = undefined;
+      else if (/^\d+(\.\d+)?$/.test(String(ts))) { const n = Number(ts); at = new Date(n > 1e12 ? n : n * 1000).toISOString(); }
+      else at = String(ts);
+      const knots = q('speed');
+      pts.push({ lat: q('lat'), lng: q('lon') ?? q('lng'), accuracy: q('accuracy'),
+        speed: knots !== undefined && knots !== '' && Number(knots) >= 0 ? Number(knots) * 0.514444 : null, heading: q('bearing') ?? q('heading'), at });
+    }
+    return { id, pts };
+  }
+  const utc = (sqlTime) => Date.parse(String(sqlTime).replace(' ', 'T') + (String(sqlTime).endsWith('Z') ? '' : 'Z'));
+  function gpsAppHandler({ query, body }) {
+    const { id, pts } = parseGpsApp(query, body);
+    if (!id) bad('Missing device id');
+    const u = get(`SELECT id, active FROM users WHERE tracking_token=?`, id.toUpperCase());
+    if (!u || !u.active) throw new HttpError(403, 'Unknown device identifier – copy it again from the Profile page');
+    run(`UPDATE users SET tracking_last_at=datetime('now') WHERE id=?`, u.id);
+    const trips = all(`SELECT * FROM trips WHERE driver_id=? AND (end_km IS NULL OR ended_at >= datetime('now','-2 days')) ORDER BY id DESC`, u.id);
+    let saved = 0, outside = 0;
+    for (const raw of pts) {
+      const p = validPoint(raw);
+      if (!p) continue;
+      const at = Date.parse(p.at);
+      const t = trips.find((x) => at >= utc(x.started_at) - 2 * 60e3 && (x.end_km === null || at <= utc(x.ended_at) + 2 * 60e3));
+      if (!t) { outside++; continue; } // not on a trip → not stored
+      saved += insertPoint(t, p, 'app');
+    }
+    return { ok: true, saved, outside };
+  }
+  route('POST', '/api/osmand', { auth: 'none', csrf: false, lenient: true }, gpsAppHandler);
+  route('GET', '/api/osmand', { auth: 'none' }, gpsAppHandler);
 
   // Delete old points once a day
   const cleanup = () => run(`DELETE FROM trip_locations WHERE recorded_at < ?`, new Date(Date.now() - KEEP_DAYS * 864e5).toISOString());

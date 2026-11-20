@@ -106,7 +106,12 @@ These are on each **vehicle page**:
 
 **Data quality:** inaccurate fixes (> 100 m) and GPS jumps are ignored in distances. Location points are deleted after **180 days** (`LOCATION_KEEP_DAYS`).
 
-**Limits of a website:** browsers only share location **while the app is open on screen**. The app keeps the screen awake during a trip, so use a phone holder. Tracking with the screen off or another app in front would need a native Android app.
+**Screen off / background:** browsers only share location while the website is open on screen, because phones block background GPS for websites. For screen-off tracking, drivers use the free **Traccar Client** app (Android and iPhone):
+- **Set-up:** the driver opens **Profile → 📡 Background location**, copies their private **device identifier** and the **server URL** (`https://<your site>/api/osmand`) into Traccar Client, allows location *all the time*, and turns off battery optimisation.
+- **Data format:** both of Traccar's formats are accepted (classic OsmAnd query/form, and the JSON of Traccar Client 9+).
+- **Only trip time is saved:** points are stored only when they fall inside one of that driver's trips (Start trip → End trip). Everything else is dropped, and queued points sent late still land in the right trip.
+- **Admin view:** the Live map shows whether a position came from the 📡 GPS app or the 🌐 website, and the Drivers page shows when each driver's app last sent data.
+- **Lost ID:** a driver can make a new identifier at any time; the old one stops working.
 
 **Maps library:** Leaflet 1.9.4 (BSD licence) is bundled in `public/vendor/leaflet`. Map pictures come from OpenStreetMap.
 

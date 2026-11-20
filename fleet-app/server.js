@@ -274,7 +274,7 @@ function send(res, status, body, headers = {}) {
   res.end(payload);
 }
 
-function readBody(req) {
+function readBody(req, { lenient = false } = {}) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
@@ -285,8 +285,12 @@ function readBody(req) {
     });
     req.on('end', () => {
       if (!chunks.length) return resolve({});
-      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
-      catch { reject(new HttpError(400, 'Invalid JSON')); }
+      const text = Buffer.concat(chunks).toString('utf8');
+      try { resolve(JSON.parse(text)); }
+      catch {
+        if (lenient) return resolve(Object.fromEntries(new URLSearchParams(text))); // e.g. form-encoded from GPS apps
+        reject(new HttpError(400, 'Invalid JSON'));
+      }
     });
     req.on('error', reject);
   });
@@ -432,7 +436,8 @@ const route = (method, pattern, opts, handler) => {
   if (typeof opts === 'function') { handler = opts; opts = {}; }
   const keys = [];
   const re = new RegExp('^' + pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$');
-  routes.push({ method, re, keys, handler, auth: opts.auth ?? 'user' });
+  // csrf:false only for machine endpoints authenticated otherwise (e.g. the GPS app's secret device id)
+  routes.push({ method, re, keys, handler, auth: opts.auth ?? 'user', csrf: opts.csrf !== false, lenient: Boolean(opts.lenient) });
 };
 
 // --- auth
@@ -468,7 +473,7 @@ route('POST', '/api/me/password', ({ user, body }) => {
 
 // --- drivers (admin)
 route('GET', '/api/drivers', { auth: 'admin' }, () =>
-  all(`SELECT id,username,name,phone,license_no,role,active,created_at FROM users ORDER BY role, name`));
+  all(`SELECT id,username,name,phone,license_no,role,active,created_at,tracking_last_at FROM users ORDER BY role, name`));
 route('POST', '/api/drivers', { auth: 'admin' }, ({ body }) => {
   const username = str(body.username, 'Username', { required: true, max: 50 });
   if (!/^[a-z0-9._-]{3,50}$/i.test(username)) bad('Username: 3+ letters/numbers, no spaces');
@@ -985,8 +990,8 @@ const server = http.createServer(async (req, res) => {
         if (r.auth !== 'none' && !user) throw new HttpError(401, 'Please log in');
         if (r.auth === 'admin' && user.role !== 'admin') throw new HttpError(403, 'Admins only');
         // Basic CSRF protection: state-changing requests must come from our own page.
-        if (req.method !== 'GET' && req.headers['x-requested-with'] !== 'fleet-app') throw new HttpError(403, 'Bad request origin');
-        const body = req.method === 'GET' ? {} : await readBody(req);
+        if (r.csrf && req.method !== 'GET' && req.headers['x-requested-with'] !== 'fleet-app') throw new HttpError(403, 'Bad request origin');
+        const body = req.method === 'GET' ? {} : await readBody(req, { lenient: r.lenient });
         const result = await r.handler({ req, res, user, params, body, query: url.searchParams });
         if (res.csv) {
           return send(res, 200, '﻿' + res.csv.body, { 'Content-Type': 'text/csv; charset=utf-8',

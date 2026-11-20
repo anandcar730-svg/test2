@@ -192,3 +192,8 @@ table.facts td { white-space: normal; overflow-wrap: anywhere; }
   box-shadow: 0 2px 6px rgba(0,0,0,.35); transform: translate(0, 0); position: relative; }
 .mpin div::after { content: ''; position: absolute; left: 10px; bottom: -6px; border: 6px solid transparent; border-top-color: var(--brand); border-bottom: 0; }
 .mpin.stale div { background: #92400e; } .mpin.stale div::after { border-top-color: #92400e; }
+/* background tracking set-up */
+.steps { padding-left: 20px; } .steps li { margin-bottom: 10px; }
+.kv { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+.kv span { color: var(--muted); min-width: 130px; font-size: .88rem; }
+.kv code { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; font-size: .95rem; overflow-wrap: anywhere; }

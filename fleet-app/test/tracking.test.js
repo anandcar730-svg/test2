@@ -106,6 +106,51 @@ const { server } = require('../server.js');
   assert.equal((await admin(`/api/trips/${t2}/route`)).data.points.length, 0);
   assert.equal((await admin('/api/live')).data[0].last, null);
 
+  // ---- background tracking with a GPS app (Traccar Client) ----------------------------------------
+  const tok = (await ravi('/api/me/tracking')).data.device_id;
+  assert.match(tok, /^[A-Z0-9]{12}$/);
+  assert.equal((await ravi('/api/me/tracking')).data.device_id, tok, 'stable until reset');
+  const app = async (qs, init = {}) => {
+    const r = await fetch(`${base}/api/osmand${qs}`, init);   // no cookie, no special header – like the app
+    return { status: r.status, data: await r.json().catch(() => null) };
+  };
+  // Ravi has trip t2 open (started just now). Classic OsmAnd format, speed in knots, unix seconds.
+  const nowS = Math.floor(Date.now() / 1000);
+  let a1 = await app(`?id=${tok}&lat=13.0700&lon=80.2600&timestamp=${nowS}&speed=20&bearing=90&accuracy=6`, { method: 'POST' });
+  assert.equal(a1.status, 200, JSON.stringify(a1.data));
+  assert.equal(a1.data.saved, 1);
+  // same through GET, lower-case id works too
+  assert.equal((await app(`?id=${tok.toLowerCase()}&lat=13.0710&lon=80.2610&timestamp=${nowS + 30}`)).data.saved, 1);
+  // JSON format (Traccar Client 9+): m/s speed, ISO time, a queued batch
+  const js = await app('', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_id: tok,
+    location: [{ timestamp: new Date((nowS + 60) * 1000).toISOString(), coords: { latitude: 13.072, longitude: 80.262, accuracy: 5, speed: 9.5, heading: 80 } },
+      { timestamp: new Date((nowS + 90) * 1000).toISOString(), coords: { latitude: 13.073, longitude: 80.263, accuracy: 5, speed: -1, heading: -1 } }] }) });
+  assert.deepEqual([js.status, js.data.saved], [200, 2]);
+  // form-encoded body also accepted
+  assert.equal((await app('', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `id=${tok}&lat=13.074&lon=80.264&timestamp=${nowS + 120}` })).data.saved, 1);
+  // wrong id → refused; a point from before the trip started → dropped (not stored)
+  assert.equal((await app(`?id=WRONGID00000&lat=13&lon=80`, { method: 'POST' })).status, 403);
+  const before = await app(`?id=${tok}&lat=13.06&lon=80.25&timestamp=${nowS - 3600}`, { method: 'POST' });
+  assert.deepEqual([before.data.saved, before.data.outside], [0, 1]);
+  const r2 = (await admin(`/api/trips/${t2}/route`)).data;
+  assert.equal(r2.points.length, 5);
+  assert.ok(r2.points.every((p) => p.source === 'app'));
+  const knots = r2.points.find((p) => p.recorded_at === new Date(nowS * 1000).toISOString());
+  assert.ok(Math.abs(knots.speed - 10.29) < 0.01, 'knots → m/s');
+  const lv = (await admin('/api/live')).data[0];
+  assert.equal(lv.last.source, 'app');
+  assert.ok((await admin('/api/drivers')).data.find((u) => u.username === 'ravi').tracking_last_at, 'admin sees the app is working');
+  // after End trip, a late (queued) point from during the trip still goes into that trip; later points are dropped
+  await ravi(`/api/trips/${t2}/end`, 'PUT', { end_km: 1030 });
+  assert.equal((await app(`?id=${tok}&lat=13.075&lon=80.265&timestamp=${nowS + 100}`, { method: 'POST' })).data.saved, 1, 'queued point inside the trip');
+  const after = await app(`?id=${tok}&lat=13.08&lon=80.27&timestamp=${nowS + 240}`, { method: "POST" }); // 4 min after End trip
+  assert.deepEqual([after.data.saved, after.data.outside], [0, 1], 'no trip → not stored');
+  // reset id: old one stops working
+  const tok2 = (await ravi('/api/me/tracking/reset', 'POST')).data.device_id;
+  assert.notEqual(tok2, tok);
+  assert.equal((await app(`?id=${tok}&lat=13&lon=80`, { method: 'POST' })).status, 403);
+
   console.log('✔ tracking tests passed');
   server.close();
 })().catch((e) => { console.error(e); process.exit(1); });
