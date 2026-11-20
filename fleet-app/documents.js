@@ -68,7 +68,7 @@ const ALIASES = Object.fromEntries(Object.entries(FIELDS).map(([f, list]) => [f,
 const LIFETIME = '9999-12-31'; // "LTT" – lifetime road tax
 const DATE_FIELDS = new Set(['insurance_upto', 'pucc_upto', 'fitness_upto', 'tax_upto', 'permit_upto', 'registration_date']);
 /** Scanned papers (photo or PDF), only ever set by hand – an online lookup never touches them. */
-const FILE_FIELDS = ['rc_file', 'insurance_file', 'pucc_file', 'fitness_file', 'tax_file', 'permit_file'];
+const FILE_FIELDS = ['vehicle_photo', 'rc_file', 'insurance_file', 'pucc_file', 'fitness_file', 'tax_file', 'permit_file'];
 const isLifetime = (v) => /^(LTT|LIFE ?TIME|OTT)/i.test(String(v || '').trim());
 const SMART = { dueDays: DUE_DAYS, refreshDays: 30, failRetryDays: 7, staleExpiredDays: 60 };
 

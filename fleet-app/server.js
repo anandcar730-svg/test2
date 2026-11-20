@@ -519,9 +519,10 @@ route('POST', '/api/vehicles', { auth: 'admin' }, ({ body }) => {
     body.assigned_driver_id ? Number(body.assigned_driver_id) : null);
   return { id: Number(r.lastInsertRowid) };
 });
-route('PUT', '/api/vehicles/:id', { auth: 'admin' }, ({ params, body }) => {
+route('PUT', '/api/vehicles/:id', { auth: 'admin' }, ({ user, params, body }) => {
   const v = get(`SELECT * FROM vehicles WHERE id=?`, Number(params.id));
   if (!v) bad('Vehicle not found');
+  const before = { ...v, driver: get(`SELECT name FROM users WHERE id=?`, v.assigned_driver_id)?.name };
   if (body.initial_km !== undefined && Number(body.initial_km) !== v.initial_km) {
     const used = get(`SELECT 1 AS x FROM trips WHERE vehicle_id=:v UNION SELECT 1 FROM fuel_logs WHERE vehicle_id=:v AND odometer IS NOT NULL
                       UNION SELECT 1 FROM services WHERE vehicle_id=:v UNION SELECT 1 FROM accidents WHERE vehicle_id=:v LIMIT 1`, { v: v.id });
@@ -534,6 +535,13 @@ route('PUT', '/api/vehicles/:id', { auth: 'admin' }, ({ params, body }) => {
     num(body.oil_interval_km ?? v.oil_interval_km, 'Oil change interval') || 5000,
     body.assigned_driver_id === undefined ? v.assigned_driver_id : body.assigned_driver_id ? Number(body.assigned_driver_id) : null,
     body.active === undefined ? v.active : body.active ? 1 : 0, v.id);
+  const a = get(`SELECT v.*, u.name AS driver FROM vehicles v LEFT JOIN users u ON u.id=v.assigned_driver_id WHERE v.id=?`, v.id);
+  const labels = { model: 'Model', fuel_type: 'Fuel', oil_interval_km: 'Oil change every (km)', driver: 'Assigned driver',
+    active: 'Active', initial_km: 'Starting odometer' };
+  const show = (k, x) => (k === 'active' ? (x ? 'yes' : 'no') : x ?? '—');
+  const changes = Object.keys(labels).filter((k) => String(before[k] ?? '') !== String(a[k] ?? ''))
+    .map((k) => `${labels[k]}: ${show(k, before[k])} → ${show(k, a[k])}`);
+  if (changes.length) logChange(v.id, user.id, changes.join('; '));
   return { ok: true };
 });
 
@@ -638,8 +646,21 @@ route('POST', '/api/loyverse/unmatched/:id/ignore', { auth: 'admin' }, ({ params
   return { ok: true };
 });
 
+// --- change history of vehicle details (who changed what, when)
+db.exec(`CREATE TABLE IF NOT EXISTS vehicle_log (
+  id INTEGER PRIMARY KEY,
+  vehicle_id INTEGER NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE,
+  user_id INTEGER REFERENCES users(id),
+  at TEXT NOT NULL DEFAULT (datetime('now')),
+  text TEXT NOT NULL
+)`);
+db.exec(`CREATE INDEX IF NOT EXISTS vehicle_log_vehicle ON vehicle_log(vehicle_id, id)`);
+function logChange(vehicleId, userId, text) {
+  run(`INSERT INTO vehicle_log (vehicle_id, user_id, text) VALUES (?,?,?)`, vehicleId, userId ?? null, String(text).slice(0, 2000));
+}
+
 // --- upkeep: parts & warranties, wheels, daily oil/coolant check, complaints
-const maintenance = require('./maintenance')({ db, all, get, run, route, saveImage, getVehicle, num, str, isoDate, bad, HttpError, today });
+const maintenance = require('./maintenance')({ db, all, get, run, route, saveImage, getVehicle, num, str, isoDate, bad, HttpError, today, logChange });
 
 // --- vehicle documents: insurance / pollution / fitness / tax / permit (admin)
 const documents = require('./documents')({ db, all, get, run, today });
@@ -654,15 +675,67 @@ route('POST', '/api/documents/sync', { auth: 'admin' }, async ({ body }) => {
   if (body.vehicle_id) return documents.syncOne(Number(body.vehicle_id)).catch(docErr);
   return documents.syncAll({ smart: Boolean(body.smart) }).catch(docErr);
 });
-route('PUT', '/api/documents/:vehicleId', { auth: 'admin' }, ({ params, body }) => {
+// Vehicle details & papers – drivers (active vehicles) and admin; every change goes into the history.
+const DETAIL_LABELS = {
+  owner_name: 'Owner', maker_model: 'Make / model (RC)', vehicle_class: 'Vehicle class', registration_date: 'Registration date',
+  registered_at: 'RTO', chassis_no: 'Chassis no.', engine_no: 'Engine no.', manufacture: 'Manufactured', color: 'Colour',
+  seating: 'Seating', financer: 'Financer', rc_status: 'RC status', insurance_company: 'Insurance company',
+  insurance_policy: 'Policy no.', insurance_upto: 'Insurance valid till', pucc_number: 'PUC no.', pucc_upto: 'PUC valid till',
+  fitness_upto: 'Fitness valid till', tax_upto: 'Road tax valid till', permit_upto: 'Permit valid till', notes: 'Notes',
+};
+const FILE_LABELS = { vehicle_photo: 'Vehicle photo', rc_file: 'RC copy', insurance_file: 'Insurance copy', pucc_file: 'PUC certificate',
+  fitness_file: 'Fitness certificate', tax_file: 'Tax receipt', permit_file: 'Permit copy' };
+route('PUT', '/api/documents/:vehicleId', ({ user, params, body }) => {
+  const vehicle = getVehicle(params.vehicleId, user); // drivers: active vehicles only
   // body.files: { rc_file: "data:…" (new upload) | null (remove) }; anything else is left as it is
   const files = {};
   for (const f of FILE_FIELDS) {
     const v = body.files?.[f];
     if (v === null) files[f] = null;
-    else if (typeof v === 'string' && v.startsWith('data:')) files[f] = saveImage(v, { allowPdf: true });
+    else if (typeof v === 'string' && v.startsWith('data:')) {
+      if (f === 'vehicle_photo' && !v.startsWith('data:image/')) bad('The vehicle photo must be a picture, not a PDF');
+      files[f] = saveImage(v, { allowPdf: f !== 'vehicle_photo' });
+    }
   }
-  try { return documents.updateManual(Number(params.vehicleId), body, files); } catch (e) { return docErr(e); }
+  const before = documents.forVehicle(vehicle.id);
+  let after;
+  try { after = documents.updateManual(vehicle.id, body, files); } catch (e) { return docErr(e); }
+  const show = (k, x) => (!x ? '—' : String(x).startsWith('9999') ? 'Lifetime' : k === 'notes' && String(x).length > 60 ? String(x).slice(0, 60) + '…' : x);
+  const changes = Object.entries(DETAIL_LABELS).filter(([k]) => String(before[k] ?? '') !== String(after[k] ?? ''))
+    .map(([k, l]) => `${l}: ${show(k, before[k])} → ${show(k, after[k])}`);
+  for (const [f, l] of Object.entries(FILE_LABELS)) {
+    if (!(f in files)) continue;
+    changes.push(files[f] === null ? (before[f] ? `${l} removed` : null) : `${l} ${before[f] ? 'replaced' : 'added'}`);
+  }
+  const list = changes.filter(Boolean);
+  if (list.length) logChange(vehicle.id, user.id, list.join('; '));
+  return after;
+});
+
+// --- all vehicles at a glance (everyone): photo, papers, oil, battery, today's check, complaints
+route('GET', '/api/fleet', ({ user }) => {
+  const t = today();
+  const rows = all(`SELECT v.*, u.name AS driver_name, u.phone AS driver_phone FROM vehicles v LEFT JOIN users u ON u.id=v.assigned_driver_id
+                    ${user.role === 'admin' ? '' : 'WHERE v.active=1'} ORDER BY v.active DESC, v.reg_no`);
+  return rows.map((v) => {
+    const doc = documents.forVehicle(v.id);
+    const papers = Object.entries(doc.docs).filter(([, s]) => s.upto).map(([k, s]) => ({ doc: k, ...s }));
+    const battery = get(`SELECT brand, serial_no, expiry_date FROM vehicle_parts WHERE vehicle_id=? AND kind='battery' AND status='active' ORDER BY id DESC LIMIT 1`, v.id);
+    const bLeft = battery?.expiry_date ? Math.round((Date.parse(battery.expiry_date) - Date.parse(t)) / 864e5) : null;
+    const check = get(`SELECT oil, coolant FROM daily_checks WHERE vehicle_id=? AND date=?`, v.id, t);
+    return {
+      id: v.id, reg_no: v.reg_no, model: v.model, fuel_type: v.fuel_type, main_fuel: primaryFuel(v.fuel_type), active: v.active,
+      assigned_driver_id: v.assigned_driver_id, driver_name: v.driver_name, driver_phone: v.driver_phone,
+      ...oilStatus(v),
+      photo: doc.vehicle_photo || null, color: doc.color || null, maker_model: doc.maker_model || null, seating: doc.seating || null,
+      papers_known: papers.length,
+      papers_expired: papers.filter((p) => p.status === 'expired').map((p) => p.doc),
+      papers_due: papers.filter((p) => p.status === 'due').map((p) => ({ doc: p.doc, days_left: p.days_left })),
+      battery: battery ? { ...battery, days_left: bLeft, state: bLeft === null ? 'unknown' : bLeft < 0 ? 'expired' : bLeft <= 30 ? 'due' : 'ok' } : null,
+      check_today: check ? { done: true, low: check.oil === 'low' || check.coolant === 'low' } : { done: false },
+      open_complaints: get(`SELECT COUNT(*) AS n FROM complaints WHERE vehicle_id=? AND status IN ('open','in_progress')`, v.id).n,
+    };
+  });
 });
 
 // --- one vehicle: everything about it
@@ -700,6 +773,8 @@ route('GET', '/api/vehicles/:id/summary', ({ user, params, query }) => {
     accidents: listers.accidents(user, new URLSearchParams({ vehicle: String(v.id) })).slice(0, 30),
     documents: documents.forVehicle(v.id),
     ...maintenance.forVehicle(v.id, user),
+    log: all(`SELECT l.at, l.text, u.name AS by_name FROM vehicle_log l LEFT JOIN users u ON u.id=l.user_id
+              WHERE l.vehicle_id=? ORDER BY l.id DESC LIMIT 50`, v.id),
   };
 });
 

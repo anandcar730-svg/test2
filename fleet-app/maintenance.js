@@ -22,7 +22,7 @@ const COMPLAINT_STATUS = ['open', 'in_progress', 'resolved', 'rejected'];
 const PRIORITIES = ['low', 'normal', 'high'];
 const DUE_DAYS = 30;
 
-module.exports = function createMaintenance({ db, all, get, run, route, saveImage, getVehicle, num, str, isoDate, bad, HttpError, today }) {
+module.exports = function createMaintenance({ db, all, get, run, route, saveImage, getVehicle, num, str, isoDate, bad, HttpError, today, logChange = () => {} }) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS vehicle_parts (
       id INTEGER PRIMARY KEY,
@@ -118,8 +118,10 @@ module.exports = function createMaintenance({ db, all, get, run, route, saveImag
       notes: str(body.notes ?? existing.notes, 'Notes'),
     };
   }
-  route('POST', '/api/parts', { auth: 'admin' }, ({ user, body }) => {
-    const v = mustVehicle(body.vehicle_id);
+  // Drivers and admin can add / edit parts; only the admin can delete.
+  const partLabel = (p) => `${PART_KINDS[p.kind] || 'Part'}${p.kind === 'battery' ? '' : ` "${p.name}"`}${p.serial_no ? ` (S/N ${p.serial_no})` : ''}`;
+  route('POST', '/api/parts', ({ user, body }) => {
+    const v = getVehicle(body.vehicle_id, user);
     const p = partBody(body);
     // A new battery normally replaces the old one
     if (p.kind === 'battery' && body.replace_previous !== false) {
@@ -129,10 +131,13 @@ module.exports = function createMaintenance({ db, all, get, run, route, saveImag
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       v.id, p.kind, p.name, p.brand, p.serial_no, p.position, p.installed_on, p.installed_km, p.warranty_months, p.expiry_date, p.cost, p.vendor,
       saveImage(body.photo), p.notes, user.id);
-    return withPart(get(`SELECT * FROM vehicle_parts WHERE id=?`, Number(r.lastInsertRowid)));
+    const added = withPart(get(`SELECT * FROM vehicle_parts WHERE id=?`, Number(r.lastInsertRowid)));
+    logChange(v.id, user.id, `Added ${partLabel(added)}${added.expiry_date ? ` – valid till ${added.expiry_date}` : ''}`);
+    return added;
   });
-  route('PUT', '/api/parts/:id', { auth: 'admin' }, ({ params, body }) => {
+  route('PUT', '/api/parts/:id', ({ user, params, body }) => {
     const cur = get(`SELECT * FROM vehicle_parts WHERE id=?`, Number(params.id)) || bad('Part not found');
+    getVehicle(cur.vehicle_id, user); // drivers: active vehicles only
     const p = partBody(body, cur);
     let photo = cur.photo;
     if (body.photo === null) photo = null; else if (typeof body.photo === 'string' && body.photo.startsWith('data:')) photo = saveImage(body.photo);
@@ -145,9 +150,21 @@ module.exports = function createMaintenance({ db, all, get, run, route, saveImag
            cost=?,vendor=?,photo=?,notes=?,status=?,replaced_on=? WHERE id=?`,
       p.kind, p.name, p.brand, p.serial_no, p.position, p.installed_on, p.installed_km, p.warranty_months, p.expiry_date,
       p.cost, p.vendor, photo, p.notes, status, replacedOn, cur.id);
-    return withPart(get(`SELECT * FROM vehicle_parts WHERE id=?`, cur.id));
+    const after = withPart(get(`SELECT * FROM vehicle_parts WHERE id=?`, cur.id));
+    const changed = ['name', 'brand', 'serial_no', 'position', 'installed_on', 'installed_km', 'expiry_date', 'cost', 'vendor', 'notes', 'photo', 'status']
+      .filter((k) => String(cur[k] ?? '') !== String(after[k] ?? ''));
+    if (changed.length) {
+      logChange(cur.vehicle_id, user.id, after.status === 'replaced' && cur.status !== 'replaced'
+        ? `Marked ${partLabel(cur)} as replaced`
+        : `Updated ${partLabel(after)}: ${changed.map((k) => (k === 'photo' ? 'photo' : `${k.replace('_', ' ')} ${cur[k] ?? '—'} → ${after[k] ?? '—'}`)).join(', ')}`);
+    }
+    return after;
   });
-  route('DELETE', '/api/parts/:id', { auth: 'admin' }, ({ params }) => { run(`DELETE FROM vehicle_parts WHERE id=?`, Number(params.id)); return { ok: true }; });
+  route('DELETE', '/api/parts/:id', { auth: 'admin' }, ({ user, params }) => {
+    const p = get(`SELECT * FROM vehicle_parts WHERE id=?`, Number(params.id));
+    if (p) { run(`DELETE FROM vehicle_parts WHERE id=?`, p.id); logChange(p.vehicle_id, user.id, `Deleted ${partLabel(p)}`); }
+    return { ok: true };
+  });
 
   // ------------------------------------------------------------------ wheels & tyres – drivers and admin
   route('POST', '/api/wheels', ({ user, body }) => {

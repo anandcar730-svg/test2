@@ -421,61 +421,212 @@ function bindOdoButtons(root, reload) {
   };
 }
 
-// --- one vehicle: everything in one place
+// --- one vehicle: profile with tabs (everyone; details editable by drivers and admin)
+const VTABS = [['overview', '🏠 Overview'], ['details', '🪪 Details & papers'], ['upkeep', '🔧 Upkeep'], ['usage', '⛽ Fuel & km'], ['issues', '📣 Complaints & accidents']];
+const vPhoto = (photo, fuel, cls = 'vphoto') => `<div class="${cls}">${photo
+  ? `<img src="/uploads/${encodeURIComponent(photo)}" alt="Vehicle photo" loading="lazy">` : `<span aria-hidden="true">${fuel === 'EV' ? '⚡' : '🚐'}</span>`}</div>`;
+const chip = (cls, text) => `<span class="chip ${cls}">${text}</span>`;
+const daysText = (n) => (n === 0 ? 'today' : `in ${n} day${n === 1 ? '' : 's'}`);
+const dateTime = (iso) => new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z').toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+
+/** Status chips from the /api/fleet shape */
+function fleetChips(v) {
+  const out = [];
+  for (const k of v.papers_expired) out.push(chip('danger', `${DOC_SHORT[k]} expired`));
+  for (const p of v.papers_due) out.push(chip('warn', `${DOC_SHORT[p.doc]} ${daysText(p.days_left)}`));
+  if (!v.papers_expired.length && !v.papers_due.length) out.push(v.papers_known ? chip('ok', '📄 Papers OK') : chip('', '📄 Papers not added'));
+  if (v.oil_status === 'overdue') out.push(chip('danger', '🛢 Oil change overdue'));
+  else if (v.oil_status === 'due_soon') out.push(chip('warn', `🛢 Oil change in ${fmt(v.oil_remaining_km)} km`));
+  if (v.battery?.state === 'due') out.push(chip('warn', `🔋 Battery warranty ${daysText(v.battery.days_left)}`));
+  if (v.check_today.done) out.push(v.check_today.low ? chip('danger', '🔴 Oil/coolant LOW') : chip('ok', '✅ Checked today'));
+  else if (v.active) out.push(chip('', '⏳ Not checked today'));
+  if (v.open_complaints) out.push(chip('warn', `📣 ${v.open_complaints} open complaint${v.open_complaints === 1 ? '' : 's'}`));
+  return out.join('');
+}
+const needsAttention = (v) => v.papers_expired.length || v.papers_due.length || ['overdue', 'due_soon'].includes(v.oil_status)
+  || v.battery?.state === 'due' || (v.check_today.done && v.check_today.low) || v.open_complaints;
+
+// --- Vehicles: everyone sees all vehicles as cards; the admin also manages the fleet here
+pages.vehicles = async (main) => {
+  const admin = state.user.role === 'admin';
+  const list = await api('/api/fleet');
+  const att = list.filter(needsAttention).length;
+  const mine = list.filter((v) => v.assigned_driver_id === state.user.id).length;
+  main.innerHTML = `<div class="row"><h1 style="margin:0">🚐 Vehicles</h1><span class="spacer"></span>
+      ${admin ? '<button class="primary" id="addv">➕ Add vehicle</button>' : ''}</div>
+    <div class="row" style="margin:14px 0">
+      <input id="vsearch" type="search" placeholder="🔍 Search number, model, driver, colour…" style="flex:1;min-width:220px">
+      <div class="seg" id="vfilter" style="margin:0">
+        <label><input type="radio" name="vf" value="all" checked><span>All (${list.length})</span></label>
+        <label><input type="radio" name="vf" value="att"><span>⚠️ Needs attention (${att})</span></label>
+        ${mine ? `<label><input type="radio" name="vf" value="mine"><span>👤 Mine (${mine})</span></label>` : ''}
+      </div></div>
+    <div class="vgrid" id="vgrid">${list.map((v) => `<a class="vcard${v.active ? '' : ' inactive'}" href="#/vehicle/${v.id}"
+        data-text="${esc([v.reg_no, v.model, v.maker_model, v.driver_name, v.color, v.fuel_type].filter(Boolean).join(' ').toLowerCase())}"
+        data-att="${needsAttention(v) ? 1 : 0}" data-mine="${v.assigned_driver_id === state.user.id ? 1 : 0}">
+        ${vPhoto(v.photo, v.main_fuel)}
+        <div class="vbody">
+          <div class="row" style="gap:6px"><b class="vreg">${esc(v.reg_no)}</b>${fuelBadge(v.main_fuel)}${v.active ? '' : '<span class="badge">inactive</span>'}</div>
+          <div class="muted small">${esc(v.model || v.maker_model || '—')}${v.color ? ` · ${esc(v.color)}` : ''}${v.seating ? ` · ${esc(v.seating)} seats` : ''}</div>
+          <div class="small">👤 ${esc(v.driver_name || 'No driver')} · 🛣 ${fmt(v.current_km)} km</div>
+          <div class="chips">${fleetChips(v)}</div>
+        </div></a>`).join('') || '<p class="muted">No vehicles yet.</p>'}</div>
+    <p class="muted" id="vnone" style="display:none">No vehicles match.</p>
+    ${admin ? `<details class="card" id="manage" ${list.length ? '' : 'open'}><summary><b>⚙️ Manage fleet</b>
+      <span class="muted">– add vehicles, assign drivers, fuel, oil interval, active</span></summary><div id="managebox"></div></details>` : ''}`;
+  const apply = () => {
+    const q = $('#vsearch', main).value.trim().toLowerCase();
+    const mode = ($('[name=vf]:checked', main) || {}).value;
+    let shown = 0;
+    for (const c of $$('.vcard', main)) {
+      const ok = (!q || c.dataset.text.includes(q)) && (mode !== 'att' || c.dataset.att === '1') && (mode !== 'mine' || c.dataset.mine === '1');
+      c.style.display = ok ? '' : 'none';
+      if (ok) shown++;
+    }
+    $('#vnone', main).style.display = shown || !list.length ? 'none' : '';
+  };
+  $('#vsearch', main).oninput = apply;
+  $('#vfilter', main).onchange = apply;
+  if (admin) {
+    await manageVehicles($('#managebox', main));
+    $('#addv', main).onclick = () => {
+      const box = $('#manage', main);
+      box.open = true;
+      box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setTimeout(() => $('#managebox [name=reg_no]', main)?.focus(), 300);
+    };
+  }
+};
+
+/** Key facts table for the overview tab */
+function keyFacts(doc, battery, id) {
+  const d = doc.docs || {};
+  const row = (label, html) => `<tr><th>${label}</th><td>${html}</td></tr>`;
+  const rows = [
+    ...DOCS.filter(([k]) => d[k]?.upto).map(([k, l]) => row(l, `${docCell(d[k]).replace('<br>', ' ')}${k === 'insurance' && doc.insurance_company ? ` <small class="muted">${esc(doc.insurance_company)}</small>` : ''}`)),
+    battery ? row('🔋 Battery', `${esc([battery.brand, battery.serial_no && `S/N ${battery.serial_no}`].filter(Boolean).join(' · ') || 'Battery')}${
+      battery.expiry_date ? ` – warranty till ${partExpiry(battery).replace('<br>', ' ')}` : ''}`) : '',
+    doc.registration_date ? row('Registered', `${niceDate(doc.registration_date)}${doc.registered_at ? ` · ${esc(doc.registered_at)}` : ''}`) : '',
+    doc.chassis_no ? row('Chassis no.', esc(doc.chassis_no)) : '',
+    doc.engine_no ? row('Engine no.', esc(doc.engine_no)) : '',
+    doc.owner_name ? row('Owner', esc(doc.owner_name)) : '',
+  ].filter(Boolean).join('');
+  return `<div class="card"><div class="row"><h2 style="margin:0">📋 Key facts</h2><span class="spacer"></span>
+      <a class="btn small" href="#/vehicle-edit/${id}">✏️ ${rows ? 'Edit' : 'Add details'}</a></div>
+    ${rows ? `<div class="table-wrap" style="margin-top:8px"><table class="facts">${rows}</table></div>`
+      : '<p class="muted">No insurance, PUC, fitness, battery or RC details yet. Anyone can add them with <b>Edit details</b>.</p>'}</div>`;
+}
+function historyCard(log, limit = 50, more = false) {
+  const items = (log || []).slice(0, limit);
+  return `<div class="card"><h2>🕘 Change history</h2>${items.length ? `<ul class="history">${items.map((l) => `<li>
+      <small class="muted">${dateTime(l.at)} · <b>${esc(l.by_name || 'system')}</b></small><br>${esc(l.text)}</li>`).join('')}</ul>
+      ${more && log.length > limit ? '<p><button class="small" data-tabgo="details">See full history</button></p>' : ''}`
+    : '<p class="muted">No changes recorded yet.</p>'}</div>`;
+}
+
 pages.vehicle = async (main, id) => {
   const d = await api(`/api/vehicles/${encodeURIComponent(id)}/summary`);
-  const v = d.vehicle, admin = state.user.role === 'admin';
+  const v = d.vehicle, admin = state.user.role === 'admin', doc = d.documents || {};
   const missingOdo = d.fuel.filter((f) => f.odometer === null).length;
+  const tab = VTABS.some(([k]) => k === state.vtab) ? state.vtab : 'overview';
+  const battery = (d.parts || []).find((p) => p.kind === 'battery' && p.status === 'active');
+  const docsS = doc.docs || {};
+  const chipData = {
+    papers_known: DOCS.filter(([k]) => docsS[k]?.upto).length,
+    papers_expired: DOCS.filter(([k]) => docsS[k]?.status === 'expired').map(([k]) => k),
+    papers_due: DOCS.filter(([k]) => docsS[k]?.status === 'due').map(([k]) => ({ doc: k, days_left: docsS[k].days_left })),
+    oil_status: v.oil_status, oil_remaining_km: v.oil_remaining_km, active: v.active,
+    battery: battery ? { state: battery.state, days_left: battery.days_left } : null,
+    check_today: (() => { const c = (d.checks || []).find((x) => x.date === today()); return c ? { done: true, low: c.oil === 'low' || c.coolant === 'low' } : { done: false }; })(),
+    open_complaints: (d.complaints || []).filter((c) => c.status === 'open' || c.status === 'in_progress').length,
+  };
+  const panel = (k, html) => `<section class="tabpanel" data-panel="${k}" role="tabpanel" ${k === tab ? '' : 'hidden'}>${html}</section>`;
   main.innerHTML = `
-    <div class="row"><a class="btn small" href="#/${admin ? 'vehicles' : 'dashboard'}">← Back</a>
-      ${admin ? `<a class="btn small" href="#/vehicle-edit/${v.id}">✏️ Edit details</a>` : ''}</div>
-    <h1 style="margin-top:12px">${esc(v.reg_no)} ${fuelBadge(v.main_fuel)} ${v.active ? '' : '<span class="badge">inactive</span>'}</h1>
-    <p class="muted">${esc(v.model || '')}${v.model ? ' · ' : ''}${esc(v.fuel_type)} · Driver: <b>${esc(v.driver_name || '—')}</b>
-      ${v.driver_phone ? ` · <a href="tel:${esc(v.driver_phone)}">📞 ${esc(v.driver_phone)}</a>` : ''}
-      ${v.loyverse_customer_id ? ' · 🧾 linked to Loyverse' : ''}</p>
-    ${['overdue', 'due_soon'].includes(v.oil_status) ? `<div class="alert ${v.oil_status === 'overdue' ? 'danger' : 'warn'}">🛢 Oil change ${
-      v.oil_status === 'overdue' ? `<b>overdue by ${fmt(-v.oil_remaining_km)} km</b>` : `due in ${fmt(v.oil_remaining_km)} km`}</div>` : ''}
-    ${missingOdo ? `<div class="alert warn">${missingOdo} fuel record(s) have no odometer reading – tap <b>➕ Add km</b> below for accurate mileage.</div>` : ''}
-    <div class="grid">
-      <div class="stat"><div class="v">${fmt(v.current_km)}</div><div class="l">Odometer (km)</div></div>
-      <div class="stat"><div class="v">${v.mileage ? fmt(v.mileage, 2) : '—'}</div><div class="l">Mileage (${esc(v.mileage_unit)})${
-        v.main_fuel === 'EV' && !v.mileage ? '<br><small>add kWh when charging to see this</small>' : ''}</div></div>
-      <div class="stat"><div class="v">${fmt(Math.max(d.month_km, d.month_odometer_km), 1)}</div><div class="l">km this month${
-        d.month_odometer_km > d.month_km ? ' (from odometer)' : ''}</div></div>
-      <div class="stat"><div class="v">${money(d.month_fuel_amount)}</div><div class="l">Fuel this month<br>${fuelList(d.month_fuel)}</div></div>
-      <div class="stat"><div class="v">${money(d.month_service_cost)}</div><div class="l">Service this month</div></div>
-      <div class="stat"><div class="v" style="font-size:1rem">${oilBadge(v)}</div><div class="l">Oil change</div></div>
+    <div class="row"><a class="btn small" href="#/vehicles">← All vehicles</a></div>
+    <div class="card vhead" style="margin-top:12px">
+      ${vPhoto(doc.vehicle_photo, v.main_fuel, 'vphoto vhead-photo')}
+      <div class="vhead-info">
+        <div class="row" style="gap:8px"><h1 style="margin:0">${esc(v.reg_no)}</h1>${fuelBadge(v.main_fuel)}${v.active ? '' : '<span class="badge">inactive</span>'}</div>
+        <div class="muted">${esc(v.model || doc.maker_model || '')}${doc.color ? ` · ${esc(doc.color)}` : ''}${doc.seating ? ` · ${esc(doc.seating)} seats` : ''} · ${esc(v.fuel_type)}</div>
+        <div>👤 Driver: <b>${esc(v.driver_name || '—')}</b>${v.driver_phone ? ` · <a href="tel:${esc(v.driver_phone)}">📞 ${esc(v.driver_phone)}</a>` : ''}
+          · 🛣 <b>${fmt(v.current_km)}</b> km${v.loyverse_customer_id ? ' · 🧾 Loyverse' : ''}</div>
+        <div class="chips">${fleetChips(chipData)}</div>
+        <div class="row" style="margin-top:10px;gap:8px">
+          <a class="btn small primary" href="#/vehicle-edit/${v.id}">✏️ Edit details</a>
+          <button class="small" data-checkveh>✅ Daily check</button>
+          <a class="btn small" href="#/fuel">⛽ Add fuel</a>
+          <button class="small" data-newc>📣 Raise complaint</button>
+        </div>
+      </div>
     </div>
-    ${regCard(d.documents, admin, v.id)}
-    ${upkeepCards(d, admin)}
-    <div class="card"><h2>All time</h2><p>${fmt(d.totals.km, 1)} km driven · ${money(d.totals.fuel_amount)} fuel · ${money(d.totals.service_cost)} service · ${d.totals.accidents} accident(s)</p></div>
-    <div class="card"><h2>📄 Documents</h2>
-      <div class="grid" style="margin:0">${DOCS.map(([k, l]) => `<div class="stat"><div class="l">${l}</div><div style="margin-top:6px">${docCell(d.documents?.docs?.[k])}</div>
-        ${k === 'insurance' && d.documents?.insurance_company ? `<small class="muted" style="overflow-wrap:anywhere">${esc(d.documents.insurance_company)}${d.documents.insurance_policy ? ' · ' + esc(d.documents.insurance_policy) : ''}</small>` : ''}
-        ${k === 'pucc' && d.documents?.pucc_number ? `<small class="muted">No. ${esc(d.documents.pucc_number)}</small>` : ''}
-        ${d.documents?.[`${k}_file`] ? `<div style="margin-top:6px">${fileLink(d.documents[`${k}_file`])}</div>` : ''}</div>`).join('')}</div>
-      <p class="muted" style="margin-bottom:0">${d.documents?.fetched_at ? `Updated online ${new Date(d.documents.fetched_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}`
-        : d.documents?.source === 'manual' ? 'Entered manually' : 'No document details yet'}${admin ? ' · <a href="#/documents">Manage</a>' : ''}</p></div>
-    <div class="card"><h2>Fuel &amp; charging <small class="muted">(last 30)</small></h2><div class="table-wrap" id="vfuel"><table>
-      <tr><th>Date</th><th>Fuel</th><th>Odometer</th><th>Qty</th><th>Amount</th><th>Station</th><th>By</th><th>Bill</th></tr>
-      ${d.fuel.map((r) => `<tr><td>${esc(r.date)}</td><td>${fuelBadge(r.fuel_type)} ${sourceBadge(r)}</td><td>${odoCell(r)}</td>
-        <td>${r.quantity > 0 ? `${fmt(r.quantity, 2)} ${esc(r.unit)}` : '<small class="muted">📍 reading</small>'}</td><td><b>${r.amount ? money(r.amount) : '—'}</b></td><td>${esc(r.station)}</td><td>${esc(r.driver_name)}</td><td>${thumb(r.photo)}</td></tr>`).join('')
-        || '<tr><td colspan="8" class="muted">No fuel records yet.</td></tr>'}
-    </table></div></div>
-    <div class="card"><h2>Daily km <small class="muted">(last 30)</small></h2><div class="table-wrap"><table>
-      <tr><th>Date</th><th>Driver</th><th>Start</th><th>End</th><th>Distance</th><th>Photos</th></tr>
-      ${d.trips.map((r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.driver_name)}</td><td>${fmt(r.start_km)}</td>
-        <td>${r.end_km === null ? '<span class="badge warn">open</span>' : fmt(r.end_km)}</td>
-        <td><b>${r.distance_km === null ? '—' : fmt(r.distance_km, 1) + ' km'}</b></td><td>${thumb(r.start_photo)} ${thumb(r.end_photo)}</td></tr>`).join('')
-        || '<tr><td colspan="6" class="muted">No trips yet.</td></tr>'}
-    </table></div></div>
-    <div class="card"><h2>Service &amp; oil change</h2><div class="table-wrap"><table>
-      <tr><th>Date</th><th>Type</th><th>Odometer</th><th>Next due</th><th>Cost</th><th>Garage</th><th>Details</th><th>Bill</th></tr>
-      ${d.services.map((r) => `<tr><td>${esc(r.date)}</td><td>${SERVICE_LABEL[r.type] || esc(r.type)}</td><td>${fmt(r.odometer)}</td>
-        <td>${fmt(r.next_due_km)}</td><td>${money(r.cost)}</td><td>${esc(r.garage)}</td><td class="wrap">${esc(r.notes)}</td><td>${thumb(r.photo)}</td></tr>`).join('')
-        || '<tr><td colspan="8" class="muted">No service records yet.</td></tr>'}
-    </table></div></div>
-    <div class="card"><h2>Accidents</h2>${d.accidents.length ? accidentTable(d.accidents) : '<p class="muted">No accidents. 👍</p>'}</div>`;
+    <div class="tabs" role="tablist">${VTABS.map(([k, l]) => `<button type="button" role="tab" data-tab="${k}" aria-selected="${k === tab}">${l}</button>`).join('')}</div>
+
+    ${panel('overview', `
+      ${['overdue', 'due_soon'].includes(v.oil_status) ? `<div class="alert ${v.oil_status === 'overdue' ? 'danger' : 'warn'}">🛢 Oil change ${
+        v.oil_status === 'overdue' ? `<b>overdue by ${fmt(-v.oil_remaining_km)} km</b>` : `due in ${fmt(v.oil_remaining_km)} km`}</div>` : ''}
+      ${missingOdo ? `<div class="alert warn">${missingOdo} fuel record(s) have no odometer reading – see <b>Fuel &amp; km</b> and tap <b>➕ Add km</b>.</div>` : ''}
+      <div class="grid">
+        <div class="stat"><div class="v">${fmt(v.current_km)}</div><div class="l">Odometer (km)</div></div>
+        <div class="stat"><div class="v">${v.mileage ? fmt(v.mileage, 2) : '—'}</div><div class="l">Mileage (${esc(v.mileage_unit)})${
+          v.main_fuel === 'EV' && !v.mileage ? '<br><small>add kWh when charging to see this</small>' : ''}</div></div>
+        <div class="stat"><div class="v">${fmt(Math.max(d.month_km, d.month_odometer_km), 1)}</div><div class="l">km this month${
+          d.month_odometer_km > d.month_km ? ' (from odometer)' : ''}</div></div>
+        <div class="stat"><div class="v">${money(d.month_fuel_amount)}</div><div class="l">Fuel this month<br>${fuelList(d.month_fuel)}</div></div>
+        <div class="stat"><div class="v">${money(d.month_service_cost)}</div><div class="l">Service this month</div></div>
+        <div class="stat"><div class="v" style="font-size:1rem">${oilBadge(v)}</div><div class="l">Oil change</div></div>
+      </div>
+      ${keyFacts(doc, battery, v.id)}
+      <div class="card"><h2>All time</h2><p style="margin:0">${fmt(d.totals.km, 1)} km driven · ${money(d.totals.fuel_amount)} fuel · ${money(d.totals.service_cost)} service · ${d.totals.accidents} accident(s)</p></div>
+      ${historyCard(d.log, 5, true)}`)}
+
+    ${panel('details', `
+      ${regCard(doc, true, v.id)}
+      <div class="card"><div class="row"><h2 style="margin:0">📄 Documents</h2><span class="spacer"></span><a class="btn small" href="#/vehicle-edit/${v.id}">✏️ Edit</a></div>
+        <div class="grid" style="margin:10px 0 0">${DOCS.map(([k, l]) => `<div class="stat"><div class="l">${l}</div><div style="margin-top:6px">${docCell(docsS[k])}</div>
+          ${k === 'insurance' && doc.insurance_company ? `<small class="muted" style="overflow-wrap:anywhere">${esc(doc.insurance_company)}${doc.insurance_policy ? ' · ' + esc(doc.insurance_policy) : ''}</small>` : ''}
+          ${k === 'pucc' && doc.pucc_number ? `<small class="muted">No. ${esc(doc.pucc_number)}</small>` : ''}
+          ${doc[`${k}_file`] ? `<div style="margin-top:6px">${fileLink(doc[`${k}_file`])}</div>` : ''}</div>`).join('')}</div>
+        <p class="muted" style="margin-bottom:0">${doc.fetched_at ? `Updated online ${dateTime(doc.fetched_at)}` : doc.source === 'manual' ? 'Entered by hand' : 'No document details yet'}${
+          admin ? ' · <a href="#/documents">All vehicles\' documents</a>' : ''}</p></div>
+      ${historyCard(d.log)}`)}
+
+    ${panel('upkeep', `
+      ${partsCard(d, admin)}${wheelsCard(d, admin)}${checksHistoryCard(d)}
+      <div class="card"><h2>🛢 Service &amp; oil change</h2><div class="table-wrap"><table>
+        <tr><th>Date</th><th>Type</th><th>Odometer</th><th>Next due</th><th>Cost</th><th>Garage</th><th>Details</th><th>Bill</th></tr>
+        ${d.services.map((r) => `<tr><td>${esc(r.date)}</td><td>${SERVICE_LABEL[r.type] || esc(r.type)}</td><td>${fmt(r.odometer)}</td>
+          <td>${fmt(r.next_due_km)}</td><td>${money(r.cost)}</td><td>${esc(r.garage)}</td><td class="wrap">${esc(r.notes)}</td><td>${thumb(r.photo)}</td></tr>`).join('')
+          || '<tr><td colspan="8" class="muted">No service records yet.</td></tr>'}
+      </table></div><p style="margin-bottom:0"><a class="btn small" href="#/services">+ Add service record</a></p></div>`)}
+
+    ${panel('usage', `
+      <div class="card"><h2>⛽ Fuel &amp; charging <small class="muted">(last 30)</small></h2><div class="table-wrap" id="vfuel"><table>
+        <tr><th>Date</th><th>Fuel</th><th>Odometer</th><th>Qty</th><th>Amount</th><th>Station</th><th>By</th><th>Bill</th></tr>
+        ${d.fuel.map((r) => `<tr><td>${esc(r.date)}</td><td>${fuelBadge(r.fuel_type)} ${sourceBadge(r)}</td><td>${odoCell(r)}</td>
+          <td>${r.quantity > 0 ? `${fmt(r.quantity, 2)} ${esc(r.unit)}` : '<small class="muted">📍 reading</small>'}</td><td><b>${r.amount ? money(r.amount) : '—'}</b></td><td>${esc(r.station)}</td><td>${esc(r.driver_name)}</td><td>${thumb(r.photo)}</td></tr>`).join('')
+          || '<tr><td colspan="8" class="muted">No fuel records yet.</td></tr>'}
+      </table></div></div>
+      <div class="card"><h2>🚗 Daily km <small class="muted">(last 30)</small></h2><div class="table-wrap"><table>
+        <tr><th>Date</th><th>Driver</th><th>Start</th><th>End</th><th>Distance</th><th>Photos</th></tr>
+        ${d.trips.map((r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.driver_name)}</td><td>${fmt(r.start_km)}</td>
+          <td>${r.end_km === null ? '<span class="badge warn">open</span>' : fmt(r.end_km)}</td>
+          <td><b>${r.distance_km === null ? '—' : fmt(r.distance_km, 1) + ' km'}</b></td><td>${thumb(r.start_photo)} ${thumb(r.end_photo)}</td></tr>`).join('')
+          || '<tr><td colspan="6" class="muted">No trips yet.</td></tr>'}
+      </table></div></div>`)}
+
+    ${panel('issues', `
+      <div class="card"><div class="row"><h2 style="margin:0">📣 Complaints</h2><span class="spacer"></span><button class="small" data-newc>+ Raise a complaint</button></div>
+        <div style="margin-top:10px">${complaintTable(d.complaints || [], admin, { showVehicle: false })}</div></div>
+      <div class="card"><h2>⚠️ Accidents</h2>${d.accidents.length ? accidentTable(d.accidents) : '<p class="muted">No accidents. 👍</p>'}
+        <p style="margin-bottom:0"><a class="btn small" href="#/accidents">+ Report an accident</a></p></div>`)}`;
+
+  const show = (k) => {
+    state.vtab = k;
+    $$('[data-tab]', main).forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === k)));
+    $$('[data-panel]', main).forEach((p) => (p.hidden = p.dataset.panel !== k));
+  };
+  $$('[data-tab]', main).forEach((b) => (b.onclick = () => show(b.dataset.tab)));
+  $$('[data-tabgo]', main).forEach((b) => (b.onclick = () => { show(b.dataset.tabgo); window.scrollTo(0, 0); }));
   bindOdoButtons(main, () => route());
   bindUpkeep(main, d);
 };
@@ -493,9 +644,10 @@ function regCard(docs, admin, id) {
   const rows = REG_FIELDS.filter(([k]) => docs?.[k]).map(([k, l]) => `<tr><th style="width:40%">${esc(l)}</th><td>${
     k === 'registration_date' ? niceDate(docs[k]) : esc(docs[k])}</td></tr>`).join('');
   if (!rows && !docs?.rc_file && !docs?.notes) {
-    return admin ? `<div class="card"><h2>🪪 Registration details</h2><p class="muted">Not filled in yet. <a href="#/vehicle-edit/${id}">Add details</a></p></div>` : '';
+    return `<div class="card"><h2>🪪 Registration details</h2><p class="muted">Not filled in yet. <a href="#/vehicle-edit/${id}">Add details</a></p></div>`;
   }
-  return `<div class="card"><h2>🪪 Registration details</h2>${rows ? `<div class="table-wrap"><table>${rows}</table></div>` : ''}
+  return `<div class="card"><div class="row"><h2 style="margin:0">🪪 Registration details</h2><span class="spacer"></span>
+    <a class="btn small" href="#/vehicle-edit/${id}">✏️ Edit</a></div>${rows ? `<div class="table-wrap" style="margin-top:8px"><table class="facts">${rows}</table></div>` : ''}
     ${docs.rc_file ? `<p><b>RC copy:</b> ${fileLink(docs.rc_file)}</p>` : ''}${docs.notes ? `<p class="muted">📝 ${esc(docs.notes)}</p>` : ''}</div>`;
 }
 
@@ -515,6 +667,7 @@ function bindPaperFields(form) {
       if (!file) return;
       try {
         if (file.type === 'application/pdf') {
+          if (name === 'vehicle_photo') throw new Error('Choose a photo of the vehicle, not a PDF');
           if (file.size > 8 * 1024 * 1024) throw new Error('PDF must be under 8 MB');
           form._files[name] = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
           cur.innerHTML = `<small>📄 ${esc(file.name)} <span class="badge warn">not saved yet</span></small>`;
@@ -529,10 +682,11 @@ function bindPaperFields(form) {
   }
 }
 
-// --- edit everything about one vehicle by hand (admin)
+// --- edit everything about one vehicle by hand (drivers and admin; basics admin-only)
 pages['vehicle-edit'] = async (main, id) => {
   const d = await api(`/api/vehicles/${encodeURIComponent(id)}/summary`);
   const v = d.vehicle, doc = d.documents || {};
+  const admin = state.user.role === 'admin';
   const drivers = (state.drivers || []).filter((x) => x.role === 'driver' && (x.active || x.id === v.assigned_driver_id));
   const val = (k) => esc(doc[k] ?? '');
   const lifetimeTax = (doc.tax_upto || '').startsWith('9999');
@@ -540,9 +694,13 @@ pages['vehicle-edit'] = async (main, id) => {
   main.innerHTML = `
     <div class="row"><a class="btn small" href="#/vehicle/${v.id}">← Back to ${esc(v.reg_no)}</a></div>
     <h1 style="margin-top:12px">✏️ ${esc(v.reg_no)} – vehicle details</h1>
-    <p class="muted">Fill in what you have; everything is optional. ${doc.fetched_at ? 'Online updates fill in the same fields – typed values are kept where the lookup has nothing.' : ''}</p>
+    <p class="muted">Fill in what you have; everything is optional. Every change is saved in the vehicle's history with your name.
+      ${doc.fetched_at ? 'Online updates fill in the same fields – typed values are kept where the lookup has nothing.' : ''}</p>
     <form id="vf">
-      <div class="card"><h2>🚐 Basic</h2><div class="fields">
+      <div class="card"><h2>📷 Vehicle photo</h2>${paperField('vehicle_photo', 'A clear photo of the whole vehicle (shown on the Vehicles page)', doc.vehicle_photo)}</div>
+      ${admin ? '' : `<div class="card"><h2>🚐 Basic</h2><p style="margin:0">${esc(v.model || '—')} · ${esc(v.fuel_type)} · Driver: <b>${esc(v.driver_name || '—')}</b>
+        · Oil change every ${fmt(v.oil_interval_km)} km</p><p class="muted" style="margin-bottom:0">Only the admin can change these.</p></div>`}
+      <div class="card" ${admin ? '' : 'hidden'}><h2>🚐 Basic</h2><div class="fields">
         <label><span>Registration no.</span><input value="${esc(v.reg_no)}" disabled></label>
         <label><span>Make / model</span><input name="model" value="${esc(v.model || '')}"></label>
         <label><span>Fuel</span><select name="fuel_type">${VEHICLE_FUELS.map((x) => `<option ${x === v.fuel_type ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
@@ -598,10 +756,12 @@ pages['vehicle-edit'] = async (main, id) => {
   const taxToggle = () => ($('[data-taxdate]', f).style.display = f.tax_lifetime.checked ? 'none' : '');
   f.tax_lifetime.onchange = taxToggle; taxToggle();
   f.onsubmit = (e) => { e.preventDefault(); submitting(f, async () => {
-    const basic = { model: f.model.value, fuel_type: f.fuel_type.value, oil_interval_km: f.oil_interval_km.value,
-      assigned_driver_id: f.assigned_driver_id.value || null, active: f.active.checked };
-    if (Number(f.initial_km.value) !== v.initial_km) basic.initial_km = f.initial_km.value;
-    await api(`/api/vehicles/${v.id}`, { method: 'PUT', body: basic });
+    if (admin) {
+      const basic = { model: f.model.value, fuel_type: f.fuel_type.value, oil_interval_km: f.oil_interval_km.value,
+        assigned_driver_id: f.assigned_driver_id.value || null, active: f.active.checked };
+      if (Number(f.initial_km.value) !== v.initial_km) basic.initial_km = f.initial_km.value;
+      await api(`/api/vehicles/${v.id}`, { method: 'PUT', body: basic });
+    }
     const body = { notes: f.notes.value, files: f._files };
     for (const [k] of REG_FIELDS) body[k] = f[k].value;
     for (const k of ['insurance_company', 'insurance_policy', 'insurance_upto', 'pucc_number', 'pucc_upto', 'fitness_upto', 'permit_upto']) body[k] = f[k].value;
@@ -719,19 +879,19 @@ function partsCard(d, admin) {
   const v = d.vehicle;
   const rows = d.parts || [];
   return `<div class="card"><div class="row"><h2 style="margin:0">🔋 Battery &amp; parts with warranty / expiry</h2><span class="spacer"></span>
-    ${admin ? `<button class="small" data-addpart="battery">+ Battery</button><button class="small" data-addpart="tyre">+ Tyre</button>
-      <button class="small" data-addpart="other">+ Other part</button>` : ''}</div>
+    <button class="small" data-addpart="battery">+ Battery</button><button class="small" data-addpart="tyre">+ Tyre</button>
+      <button class="small" data-addpart="other">+ Other part</button></div>
     ${rows.length ? `<div class="table-wrap" style="margin-top:10px"><table>
-      <tr><th>Part</th><th>Brand / serial no.</th><th>Installed</th><th>Warranty / expiry</th><th>Cost</th><th>Photo</th>${admin ? '<th></th>' : ''}</tr>
+      <tr><th>Part</th><th>Brand / serial no.</th><th>Installed</th><th>Warranty / expiry</th><th>Cost</th><th>Photo</th><th></th></tr>
       ${rows.map((p) => `<tr style="${p.status === 'replaced' ? 'opacity:.55' : ''}"><td><b>${esc(p.kind === 'battery' ? '🔋 ' + p.name : p.kind === 'tyre' ? '🛞 ' + p.name : '🧩 ' + p.name)}</b>
           ${p.position ? `<br><small class="muted">${esc(p.position)}</small>` : ''}${p.notes ? `<br><small class="muted">${esc(p.notes)}</small>` : ''}</td>
         <td>${esc(p.brand || '—')}${p.serial_no ? `<br><small>S/N <b>${esc(p.serial_no)}</b></small>` : ''}</td>
         <td>${niceDate(p.installed_on)}${p.installed_km ? `<br><small class="muted">at ${fmt(p.installed_km)} km</small>` : ''}${p.vendor ? `<br><small class="muted">${esc(p.vendor)}</small>` : ''}</td>
         <td>${partExpiry(p)}${p.warranty_months ? `<br><small class="muted">${p.warranty_months % 12 === 0 ? `${p.warranty_months / 12} yr` : `${p.warranty_months} months`} warranty</small>` : ''}</td>
         <td>${p.cost ? money(p.cost) : '—'}</td><td>${thumb(p.photo)}</td>
-        ${admin ? `<td style="white-space:nowrap"><button class="small" data-editpart="${p.id}">Edit</button>
-          ${p.status === 'active' ? `<button class="small" data-replpart="${p.id}">Replaced</button>` : ''}<button class="small danger" data-delpart="${p.id}">Delete</button></td>` : ''}</tr>`).join('')}
-    </table></div>` : `<p class="muted">No battery or parts recorded yet.${admin ? ' Add the battery with its serial number and warranty.' : ''}</p>`}</div>`;
+        <td style="white-space:nowrap"><button class="small" data-editpart="${p.id}">Edit</button>
+          ${p.status === 'active' ? `<button class="small" data-replpart="${p.id}">Replaced</button>` : ''}${admin ? `<button class="small danger" data-delpart="${p.id}">Delete</button>` : ''}</td></tr>`).join('')}
+    </table></div>` : '<p class="muted">No battery or parts recorded yet. Add the battery with its serial number and warranty.</p>'}</div>`;
 }
 
 // ---- wheels & tyres
@@ -916,8 +1076,8 @@ function bindUpkeep(main, d) {
     if (!confirm('Delete this wheel record?')) return;
     await api(`/api/wheels/${b.dataset.delwheel}`, { method: 'DELETE' }).catch((e) => toast(e.message, true)); route();
   };
-  $('[data-checkveh]', main).onclick = () => checkDialog(v, (d.checks || []).find((c) => c.date === today()));
-  $('[data-newc]', main).onclick = () => complaintDialog(v.id);
+  $$('[data-checkveh]', main).forEach((b) => (b.onclick = () => checkDialog(v, (d.checks || []).find((c) => c.date === today()))));
+  $$('[data-newc]', main).forEach((b) => (b.onclick = () => complaintDialog(v.id)));
   bindComplaintButtons(main, d.complaints || []);
 }
 
@@ -1222,13 +1382,13 @@ pages.accidents = async (main) => {
   bindFilters($('#flt', main), 'accidents', load);
 };
 
-// --- vehicles (admin)
-pages.vehicles = async (main) => {
+// --- manage fleet (admin part of the Vehicles page)
+const manageVehicles = async (main) => {
   await refreshVehicles();
   const drivers = (state.drivers = await api('/api/drivers')).filter((d) => d.role === 'driver' && d.active);
   const driverOpts = (sel) => `<option value="">— none —</option>${drivers.map((d) => `<option value="${d.id}" ${sel === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}`;
-  main.innerHTML = `<h1>Vehicles</h1>
-    <div class="card"><h2>Add vehicle</h2><form id="f"><div class="fields">
+  main.innerHTML = `
+    <div class="card"><h2>➕ Add vehicle</h2><form id="f"><div class="fields">
       <label><span>Registration no. *</span><input name="reg_no" required placeholder="DL01AB1234" style="text-transform:uppercase"></label>
       <label><span>Make / model</span><input name="model" placeholder="Maruti WagonR CNG"></label>
       <label><span>Fuel</span><select name="fuel_type">${VEHICLE_FUELS.map((x) => `<option>${x}</option>`).join('')}</select></label>
@@ -1236,7 +1396,7 @@ pages.vehicles = async (main) => {
       <label><span>Oil change every (km)</span><input name="oil_interval_km" type="number" min="100" value="5000"></label>
       <label><span>Assigned driver</span><select name="assigned_driver_id">${driverOpts()}</select></label>
     </div><div class="actions"><button class="primary" type="submit">Add vehicle</button></div></form></div>
-    <div class="card"><h2>Fleet</h2><div class="table-wrap"><table>
+    <div class="card"><h2>🛠 Fleet settings <small class="muted">(changes save straight away)</small></h2><div class="table-wrap"><table>
       <tr><th>Reg. no.</th><th>Model</th><th>Fuel</th><th>Odometer</th><th>Oil interval</th><th>Driver</th><th>Oil change</th><th>Active</th></tr>
       ${state.vehicles.map((v) => `<tr data-v="${v.id}"><td><b>${vlink(v.id, v.reg_no)}</b>${v.loyverse_customer_id ? '<br><small class="muted">🧾 in Loyverse</small>' : ''}
         <br><a class="small" href="#/vehicle-edit/${v.id}">✏️ Edit details</a></td><td>${esc(v.model)}</td><td><select data-k="fuel_type">${VEHICLE_FUELS.map((x) => `<option ${x === v.fuel_type ? 'selected' : ''}>${x}</option>`).join('')}</select></td>
@@ -1314,7 +1474,7 @@ pages.profile = async (main) => {
 const NAV = [
   ['dashboard', '📊', 'Dashboard'], ['trips', '🚗', 'Daily km'], ['fuel', '⛽', 'Fuel'],
   ['services', '🛢', 'Service'], ['accidents', '⚠️', 'Accidents'], ['complaints', '📣', 'Complaints'],
-  ['vehicles', '🚐', 'Vehicles', 'admin'], ['drivers', '👤', 'Drivers', 'admin'], ['documents', '📄', 'Documents', 'admin'], ['loyverse', '🧾', 'Loyverse', 'admin'],
+  ['vehicles', '🚐', 'Vehicles'], ['drivers', '👤', 'Drivers', 'admin'], ['documents', '📄', 'Documents', 'admin'], ['loyverse', '🧾', 'Loyverse', 'admin'],
   ['profile', '⚙️', 'Profile'],
 ];
 
@@ -1347,9 +1507,9 @@ async function route() {
   if (!state.user) return;
   let [page, param] = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/');
   const nav = NAV.find((n) => n[0] === page);
-  const hidden = param && (page === 'vehicle' || (page === 'vehicle-edit' && state.user.role === 'admin')); // pages without a menu entry
+  const hidden = param && (page === 'vehicle' || page === 'vehicle-edit'); // pages without a menu entry
   if (!hidden && (!nav || (nav[3] && nav[3] !== state.user.role))) page = 'dashboard';
-  const activeNav = page === 'vehicle' || page === 'vehicle-edit' ? (state.user.role === 'admin' ? 'vehicles' : 'dashboard') : page;
+  const activeNav = page === 'vehicle' || page === 'vehicle-edit' ? 'vehicles' : page;
   $$('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === activeNav));
   const main = $('#main');
   main.innerHTML = '<p class="muted">Loading…</p>';

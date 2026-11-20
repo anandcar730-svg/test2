@@ -93,11 +93,28 @@ These are on each **vehicle page**:
   - The admin sets the status: *Open → In progress → Resolved / Rejected*, with notes.
   - Drivers see their own complaints and the ones about them.
 
-## Vehicle page
-Click any vehicle number to see everything about that vehicle on one page:
-- details: driver, odometer, mileage, oil-change status
-- this month's km, fuel and service, plus all-time totals
-- the latest fuel, trip, service and accident records
+## Vehicles section (everyone)
+**🚐 Vehicles** in the menu shows every vehicle as a card: photo, number, model, colour, seats, driver and odometer, plus status chips. The chips cover:
+- papers expired or due
+- oil change due
+- battery warranty
+- today's oil and coolant check
+- open complaints
+
+Search by number, model, driver or colour, or filter **Needs attention** / **Mine**. The admin also gets **➕ Add vehicle** and **⚙️ Manage fleet** (assign drivers, fuel, oil interval, active).
+
+Opening a vehicle shows its profile: a header with the photo, driver (tap to call), status chips and quick buttons (**Edit details**, **Daily check**, **Add fuel**, **Raise complaint**), and these tabs:
+- **Overview:** odometer, mileage, this month's km, fuel and service, oil-change status, **Key facts** (insurance, PUC, fitness, tax, battery S/N and warranty, chassis/engine no.), all-time totals and the latest changes.
+- **Details & papers:** RC details, documents with their copies, and the **full change history**.
+- **Upkeep:** battery and parts, wheels and tyres, daily checks, service records.
+- **Fuel & km:** fuel/charging and daily km.
+- **Complaints & accidents.**
+
+**Who can change what:**
+- **Drivers and admin:** vehicle photo, RC details, insurance, PUC, fitness, tax, permit, scanned papers and notes; adding or editing a battery, tyre or other part; wheel work, daily checks and complaints.
+- **Admin only:** model, fuel, assigned driver, oil-change interval, starting odometer, active/inactive, and deleting records.
+
+Every change is written to the vehicle's **change history** with the person's name and time, for example *"Ravi Kumar · Insurance valid till: — → 2027-07-18; Vehicle photo added"*.
 
 ## Run it
 
