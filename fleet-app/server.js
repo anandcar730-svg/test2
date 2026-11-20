@@ -875,6 +875,9 @@ route('POST', '/api/services', ({ user, body }) => {
   if (type === 'oil_change' && !usesOil(v.fuel_type)) bad('Electric vehicles do not need oil changes – choose another service type');
   const odo = num(body.odometer, 'Odometer');
   let next = num(body.next_due_km, 'Next due km', { required: false });
+  // "next change after 2000 km" -> odometer + 2000
+  const after = num(body.next_after_km, 'Next change after (km)', { required: false });
+  if (!next && after) next = odo + after;
   if (type === 'oil_change' && !next) next = odo + v.oil_interval_km;
   if (next !== null && next <= odo) bad('Next due km must be higher than the current odometer');
   const r = run(`INSERT INTO services (driver_id,vehicle_id,date,odometer,type,cost,garage,next_due_km,photo,notes)

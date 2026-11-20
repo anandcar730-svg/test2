@@ -197,3 +197,5 @@ table.facts td { white-space: normal; overflow-wrap: anywhere; }
 .kv { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
 .kv span { color: var(--muted); min-width: 130px; font-size: .88rem; }
 .kv code { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; font-size: .95rem; overflow-wrap: anywhere; }
+
+.quickkm { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }

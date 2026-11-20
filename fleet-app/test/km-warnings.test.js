@@ -106,6 +106,14 @@ const { server } = require('../server.js');
   assert.match(latest, /Oil change due in 950 km/);
   assert.match(latest, /Battery change OVERDUE by 4,090 km/);
 
+  // "next oil change after 2000 km" -> due at odometer + 2000
+  await admin('/api/services', 'POST', { vehicle_id: car, date: day, odometer: 19200, type: 'oil_change', next_after_km: '2000' });
+  assert.equal((await admin(`/api/vehicles/${car}/summary`)).data.vehicle.oil_due_km, 21200);
+  // an explicit "next due at" wins over "after"
+  await admin('/api/services', 'POST', { vehicle_id: car, date: day, odometer: 19300, type: 'oil_change', next_after_km: '2000', next_due_km: '22000' });
+  assert.equal((await admin(`/api/vehicles/${car}/summary`)).data.vehicle.oil_due_km, 22000);
+  assert.equal((await admin('/api/services', 'POST', { vehicle_id: car, date: day, odometer: 19400, type: 'oil_change', next_after_km: 'abc' })).status, 400);
+
   console.log('✔ km warnings tests passed');
   server.close();
 })().catch((e) => { console.error(e); process.exit(1); });

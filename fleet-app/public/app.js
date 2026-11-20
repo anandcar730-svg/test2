@@ -1298,6 +1298,8 @@ pages.services = async (main) => {
       ${kmField('odometer', 'Odometer at service (km)')}
       <label><span>Cost (₹)</span><input name="cost" type="number" inputmode="decimal" step="0.01" min="0"></label>
       <label><span>Garage / workshop</span><input name="garage"></label>
+      <label><span>Next change after (km)</span><input name="next_after_km" type="number" inputmode="numeric" min="1" step="1" placeholder="e.g. 2000">
+        <div class="quickkm">${[1000, 2000, 3000, 5000, 10000].map((k) => `<button type="button" class="small" data-after="${k}">+${fmt(k)}</button>`).join('')}</div></label>
       <label><span>Next due at (km)</span><input name="next_due_km" type="number" inputmode="decimal" min="0">
         <small class="muted" id="nexthint"></small></label>
       <label class="full"><span>Work done / parts replaced</span><textarea name="notes" placeholder="Engine oil 5W-30, oil filter, air filter…"></textarea></label>
@@ -1320,10 +1322,31 @@ pages.services = async (main) => {
     oilOpt.disabled = isEV;
     if (isEV && f.type.value === 'oil_change') f.type.value = 'general_service';
     $('#evnote', f).textContent = isEV ? 'Electric vehicle – no oil change needed' : '';
-    $('#nexthint', f).textContent = f.type.value === 'oil_change' && v && odo
-      ? `Leave blank for default: ${fmt(odo + v.oil_interval_km)} km (every ${fmt(v.oil_interval_km)} km)` : '';
+    const after = Number(f.next_after_km.value);
+    $('#nexthint', f).textContent = after > 0 && odo ? `= ${fmt(odo)} + ${fmt(after)} km`
+      : f.type.value === 'oil_change' && v && odo
+        ? `Leave blank for default: ${fmt(odo + v.oil_interval_km)} km (every ${fmt(v.oil_interval_km)} km)` : '';
   };
-  f.oninput = hint; f.onchange = hint; hint();
+  // "next change after X km" + odometer = "next due at" (and the other way round)
+  const sync = (from) => {
+    const odo = Number(f.odometer.value) || 0;
+    const a = Number(f.next_after_km.value);
+    if (from === 'after' || (from === 'odo' && a > 0)) {
+      f.next_due_km.value = a > 0 && odo ? Math.round(odo + a) : '';
+    } else if (from === 'due') {
+      const d = Number(f.next_due_km.value);
+      f.next_after_km.value = d > odo && odo ? Math.round(d - odo) : '';
+    }
+  };
+  f.querySelectorAll('[data-after]').forEach((b) => { b.onclick = () => {
+    f.next_after_km.value = b.dataset.after; sync('after'); hint();
+  }; });
+  f.oninput = (e) => {
+    const n = e.target.name;
+    if (n === 'next_after_km') sync('after'); else if (n === 'next_due_km') sync('due'); else if (n === 'odometer') sync('odo');
+    hint();
+  };
+  f.onchange = hint; hint();
   f.onsubmit = (e) => { e.preventDefault(); submitting(f, async () => {
     await api('/api/services', { method: 'POST', body: { ...formData(f), photo: f._photos.photo[0] } });
     toast('Service record saved'); route();
